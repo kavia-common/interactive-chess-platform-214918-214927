@@ -20,6 +20,8 @@ import Board from "./components/Board";
 import MoveHistory from "./components/MoveHistory";
 import CapturedPanel from "./components/CapturedPanel";
 import Controls, { TIME_PRESETS } from "./components/Controls";
+import PgnModal from "./components/PgnModal";
+import { buildPositionsFromMoves } from "./chess/pgn";
 import Clocks from "./components/Clocks";
 import EvalBar from "./components/EvalBar";
 import AnalysisControls from "./components/AnalysisControls";
@@ -158,6 +160,9 @@ function App() {
 
   const [timeoutResult, setTimeoutResult] = useState(null);
   // { state: "timeout"|"timeout-draw", loser?: "w"|"b", winner?: "w"|"b", reason: string }
+
+  // PGN modal
+  const [pgnOpen, setPgnOpen] = useState(false);
 
   // Keep refs for use inside timers/effects without stale closures.
   const clockRef = useRef(clock);
@@ -917,6 +922,19 @@ function App() {
               }}
             />
 
+            <div className="buttonRow" style={{ marginTop: 10 }}>
+              <button
+                className="button buttonGhost"
+                onClick={() => setPgnOpen(true)}
+                aria-label="Open PGN import/export"
+              >
+                PGN…
+              </button>
+              <span className="pill">
+                Share games via <span className="kbd">PGN</span>
+              </span>
+            </div>
+
             <div className="statusBar" role="status" aria-live="polite">
               <div className="statusText">{statusLine}</div>
               <div className="statusHint">
@@ -1072,6 +1090,42 @@ function App() {
             )}
           </div>
         </div>
+
+        <PgnModal
+          open={pgnOpen}
+          onClose={() => setPgnOpen(false)}
+          positions={positions}
+          cursor={cursor}
+          analysisEnabled={analysisEnabled}
+          defaultHeaders={{
+            Event: "Retro Chess Terminal",
+            Site: "Local",
+            White: mode === "ai" ? (playAs === "w" ? "You" : "AI") : "White",
+            Black: mode === "ai" ? (playAs === "b" ? "You" : "AI") : "Black",
+          }}
+          onImportGame={(game) => {
+            // Replace main game state with imported moves.
+            cancelAiSearch();
+            setTimeoutResult(null);
+
+            const newPositions = buildPositionsFromMoves(game.moves);
+
+            setPositions(newPositions);
+            setCursor(newPositions.length - 1);
+            setSelected(null);
+
+            // Reset/disarm clocks and pause (requirements: reset/paused).
+            setClock(
+              createClockState({
+                baseMinutes: effectiveMinutes,
+                incrementSeconds: effectiveIncrement,
+              })
+            );
+            setClockArmed(false);
+            setClockManualPaused(false);
+            setClockVisibilityPaused(false);
+          }}
+        />
 
         <div style={{ height: 18 }} />
 

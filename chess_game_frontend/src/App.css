@@ -758,3 +758,133 @@
     0 0 44px rgba(59, 130, 246, 0.22),
     0 16px 50px rgba(17, 24, 39, 0.12);
 }
+
+/* -----------------------
+   PGN modal (retro)
+   ----------------------- */
+.pgnOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(17, 24, 39, 0.50);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px 14px;
+}
+
+.pgnModal {
+  width: min(920px, 100%);
+  max-height: min(86vh, 860px);
+  overflow: auto;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.78));
+  box-shadow:
+    0 0 0 2px rgba(59, 130, 246, 0.10),
+    0 30px 90px rgba(17, 24, 39, 0.30);
+  padding: 14px;
+}
+
+.pgnHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.pgnTitle {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: rgba(17, 24, 39, 0.78);
+}
+
+.pgnTabs {
+  display: inline-flex;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.pgnTab {
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 8px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(17, 24, 39, 0.78);
+}
+
+.pgnTab:hover {
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.pgnTabActive {
+  border-color: rgba(6, 182, 212, 0.35);
+  background: rgba(6, 182, 212, 0.10);
+  box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.08);
+}
+
+.pgnBody {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.pgnTextArea {
+  width: 100%;
+  min-height: 260px;
+  resize: vertical;
+  border-radius: 14px;
+  border: 1px solid rgba(17, 24, 39, 0.16);
+  background: rgba(255, 255, 255, 0.82);
+  padding: 12px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.04);
+}
+
+.pgnTextArea:focus {
+  border-color: rgba(59, 130, 246, 0.45);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+}
+
+.pgnError {
+  border-radius: 14px;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.08);
+  padding: 10px 12px;
+}
+
+.pgnErrorTitle {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  color: rgba(239, 68, 68, 0.92);
+}
+
+.pgnErrorText {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: rgba(17, 24, 39, 0.86);
+}
+
+.pgnErrorMeta {
+  margin-top: 8px;
+  font-size: 12px;
+  color: rgba(17, 24, 39, 0.72);
+}

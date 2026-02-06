@@ -54,6 +54,18 @@ Common components include:
 - Navigation (`.navbar`)
 - Typography (`.title`, `.subtitle`, `.description`)
 
+## PGN import/export
+
+This app supports saving/loading games via **PGN**:
+
+- Click **PGN…** in the Controls panel.
+- **Export**: copy to clipboard or download `game.pgn`.
+- **Import**: paste PGN text or choose a `.pgn` file.
+
+Notes:
+- Comments, NAGs, and variations are currently ignored on import.
+- If **Analysis mode** is active, you’ll be prompted before applying the imported PGN to the *main* game (analysis stays separate).
+
 ## Learn More
 
 To learn React, check out the [React documentation](https://reactjs.org/).
