@@ -27,6 +27,7 @@ import EvalBar from "./components/EvalBar";
 import AnalysisControls from "./components/AnalysisControls";
 import ThemeSwitcher from "./components/ThemeSwitcher";
 import PieceSetPicker from "./components/PieceSetPicker";
+import PuzzleTrainer from "./components/PuzzleTrainer";
 import {
   applyThemeToDocument,
   loadThemePrefs,
@@ -70,6 +71,7 @@ import { getLimitsForDifficulty } from "./chess/ai/limits";
  * flag detection, and AI search offloaded to a Web Worker for responsive UI.
  */
 function App() {
+  const [activeView, setActiveView] = useState("game"); // "game" | "puzzles"
   const [mode, setMode] = useState("ai"); // "local" | "ai"
   const [playAs, setPlayAs] = useState("w"); // used when mode === "ai"
 
@@ -809,6 +811,21 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analysisEnabled]);
 
+  // Entering puzzles must not alter game state, but should pause clocks/AI/analysis.
+  useEffect(() => {
+    if (activeView !== "puzzles") return;
+
+    // Exit analysis mode while in puzzles (so analysis engine and clocks remain paused).
+    setAnalysisEnabled(false);
+
+    // Stop any AI computation immediately.
+    cancelAiSearch();
+
+    // Pause clocks if they were armed.
+    setClockManualPaused(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView]);
+
   // When leaving analysis mode, stop any analysis.
   useEffect(() => {
     if (analysisEnabled) return;
@@ -856,326 +873,345 @@ function App() {
                 <span className="kbd">Ctrl</span>+<span className="kbd">Y</span>
               </span>
             </p>
+
+            <div className="buttonRow" style={{ marginTop: 8 }}>
+              <button
+                className={`button ${activeView === "game" ? "buttonPrimary" : "buttonGhost"}`}
+                onClick={() => setActiveView("game")}
+                aria-label="Open game view"
+              >
+                Game
+              </button>
+              <button
+                className={`button ${activeView === "puzzles" ? "buttonPrimary" : "buttonGhost"}`}
+                onClick={() => setActiveView("puzzles")}
+                aria-label="Open puzzles view"
+              >
+                Puzzles
+              </button>
+            </div>
           </div>
           <div className="badge" aria-label="App status badge">
             <span className="dot" />
-            <span>{mode === "ai" ? "SINGLE PLAYER" : "LOCAL 2P"}</span>
+            <span>
+              {activeView === "puzzles" ? "PUZZLES" : mode === "ai" ? "SINGLE PLAYER" : "LOCAL 2P"}
+            </span>
           </div>
         </div>
 
-        <div className="layout">
-          <div className="card">
-            <h2 className="cardTitle">Controls</h2>
+        {activeView === "puzzles" ? (
+          <PuzzleTrainer pieceSetId={pieceSetId} onExit={() => setActiveView("game")} />
+        ) : (
+          <>
+            <div className="layout">
+              <div className="card">
+                <h2 className="cardTitle">Controls</h2>
 
-            <AnalysisControls
-              enabled={analysisEnabled}
-              onToggleEnabled={(v) => setAnalysisEnabled(Boolean(v))}
-              limitsMode={analysisLimitsMode}
-              onLimitsModeChange={(v) => setAnalysisLimitsMode(v)}
-              timeMs={analysisTimeMs}
-              onTimeMsChange={(v) => setAnalysisTimeMs(v)}
-              maxDepth={analysisMaxDepth}
-              onMaxDepthChange={(v) => setAnalysisMaxDepth(v)}
-              multiPv={analysisMultiPv}
-              onMultiPvChange={(v) => setAnalysisMultiPv(v)}
-              isThinking={analysisThinking}
-              onStart={() => runAnalysisNow()}
-              onStop={() => cancelAnalysis()}
-              onClear={() => {
-                setAnalysisSession(createAnalysisSession(position));
-                setAnalysisPvLines([]);
-              }}
-              onExportJson={() => {
-                const txt = exportAnalysisJson(analysisSession);
-                navigator.clipboard?.writeText?.(txt);
-              }}
-              onImportJson={() => {
-                const txt = window.prompt("Paste analysis JSON:");
-                if (!txt) return;
-                const s = importAnalysisJson(txt);
-                if (s) setAnalysisSession(s);
-              }}
-              onExportPgn={() => {
-                const txt = exportAnalysisPgn(analysisSession);
-                navigator.clipboard?.writeText?.(txt);
-              }}
-              onApplyToGame={() => applyAnalysisToGame()}
-              canApply={analysisEnabled && analysisSession.selectedId !== analysisSession.rootId}
-            />
-
-            <div style={{ height: 12 }} />
-
-            <Controls
-              mode={mode}
-              playAs={playAs}
-              aiDifficulty={aiDifficulty}
-              aiCustomMaxDepth={aiCustomMaxDepth}
-              aiCustomThinkMs={aiCustomThinkMs}
-              canUndo={cursor > 0}
-              canRedo={cursor < positions.length - 1}
-              canMove={canMoveNow && !aiThinking}
-              onModeChange={(v) => {
-                setMode(v);
-                setSelected(null);
-              }}
-              onPlayAsChange={(v) => {
-                setPlayAs(v);
-                setSelected(null);
-              }}
-              onAiDifficultyChange={(v) => setAiDifficulty(v)}
-              onAiCustomMaxDepthChange={(v) => setAiCustomMaxDepth(v)}
-              onAiCustomThinkMsChange={(v) => setAiCustomThinkMs(v)}
-              onNewGame={newGame}
-              onUndo={undo}
-              onRedo={redo}
-              timePresetId={timePresetId}
-              customMinutes={customMinutes}
-              customIncrement={customIncrement}
-              timeControlsLocked={timeControlsLocked || analysisEnabled}
-              clockStarted={clockArmed}
-              isPaused={clockManualPaused}
-              onTimePresetChange={(id) => setTimePresetId(id)}
-              onCustomMinutesChange={(v) => setCustomMinutes(Number(v))}
-              onCustomIncrementChange={(v) => setCustomIncrement(Number(v))}
-              onStartClock={() => {
-                if (!canMoveNow) return;
-                setClockArmed(true);
-                setClockManualPaused(false);
-                // Do NOT start ticking yet; ticking starts on first move.
-                setClock((c) => ({
-                  ...c,
-                  isRunning: false,
-                  isPaused: false,
-                  activeColor: null,
-                  lastTickAt: null,
-                }));
-              }}
-              onTogglePause={() => {
-                if (!clockArmed) return;
-                setClockManualPaused((p) => !p);
-              }}
-            />
-
-            <ThemeSwitcher
-              themeId={themeId}
-              boardSchemeId={boardSchemeId}
-              onChangeThemeId={(id) => setThemePrefs((p) => ({ ...p, themeId: id }))}
-              onChangeBoardSchemeId={(id) =>
-                setThemePrefs((p) => ({ ...p, boardSchemeId: id }))
-              }
-            />
-
-            <PieceSetPicker
-              pieceSetId={pieceSetId}
-              onChangePieceSetId={(id) => setPiecePrefs({ pieceSetId: id })}
-            />
-
-            <div className="buttonRow" style={{ marginTop: 10 }}>
-              <button
-                className="button buttonGhost"
-                onClick={() => setPgnOpen(true)}
-                aria-label="Open PGN import/export"
-              >
-                PGN…
-              </button>
-              <span className="pill">
-                Share games via <span className="kbd">PGN</span>
-              </span>
-            </div>
-
-            <div className="statusBar" role="status" aria-live="polite">
-              <div className="statusText">{statusLine}</div>
-              <div className="statusHint">
-                {analysisEnabled
-                  ? "Analysis mode — explore freely; Apply to commit."
-                  : timeoutResult
-                    ? timeoutResult.reason
-                    : cursor !== positions.length - 1
-                      ? "Viewing history — return to latest to continue."
-                      : mode === "ai"
-                        ? `You are ${playAs === "w" ? "White" : "Black"}`
-                        : "Pass & play"}
-              </div>
-            </div>
-
-            <div style={{ height: 10 }} />
-
-            {analysisEnabled && analysisThinking ? (
-              <div className="aiThinkingRow" aria-label="Engine analysis indicator">
-                <span className="crtThinkingDot" aria-hidden="true" />
-                <span className="aiThinkingText">Analyzing…</span>
-              </div>
-            ) : mode === "ai" && aiThinking ? (
-              <div className="aiThinkingRow" aria-label="AI thinking indicator">
-                <span className="crtThinkingDot" aria-hidden="true" />
-                <span className="aiThinkingText">
-                  Thinking…{" "}
-                  {aiInfo ? (
-                    <span style={{ opacity: 0.75 }}>
-                      (d{aiInfo.depth}, {Math.round(aiInfo.timeMs)}ms, {aiInfo.nodes} nodes)
-                    </span>
-                  ) : null}
-                </span>
-              </div>
-            ) : null}
-
-            <div style={{ height: 10 }} />
-
-            <Clocks
-              whiteMs={clock.remainingWMs}
-              blackMs={clock.remainingBMs}
-              activeColor={clock.isRunning && !clock.isPaused ? clock.activeColor : null}
-              isRunning={clockRunning}
-              isPaused={isClockPaused}
-              labels={clocksLabels}
-            />
-
-            <div style={{ height: 12 }} />
-
-            <div className="boardWrap">
-              <EvalBar rawEval={boardEvalRaw} />
-              <div className={aiThinking ? "boardThinkingWrap" : ""}>
-                <Board
-                  position={boardPosition}
-                  orientation={mode === "ai" ? playAs : "w"}
-                  pieceSetId={pieceSetId}
-                  selected={selected}
-                  legalTargets={legalTargetsForSelected}
-                  lastMove={lastMove}
-                  inCheckSquare={status.inCheckSquare}
-                  onSquareClick={onSquareClick}
-                  onPieceDrop={onPieceDrop}
-                  isMoveLegal={(from, to) => isMoveLegal(boardPosition, from, to)}
+                <AnalysisControls
+                  enabled={analysisEnabled}
+                  onToggleEnabled={(v) => setAnalysisEnabled(Boolean(v))}
+                  limitsMode={analysisLimitsMode}
+                  onLimitsModeChange={(v) => setAnalysisLimitsMode(v)}
+                  timeMs={analysisTimeMs}
+                  onTimeMsChange={(v) => setAnalysisTimeMs(v)}
+                  maxDepth={analysisMaxDepth}
+                  onMaxDepthChange={(v) => setAnalysisMaxDepth(v)}
+                  multiPv={analysisMultiPv}
+                  onMultiPvChange={(v) => setAnalysisMultiPv(v)}
+                  isThinking={analysisThinking}
+                  onStart={() => runAnalysisNow()}
+                  onStop={() => cancelAnalysis()}
+                  onClear={() => {
+                    setAnalysisSession(createAnalysisSession(position));
+                    setAnalysisPvLines([]);
+                  }}
+                  onExportJson={() => {
+                    const txt = exportAnalysisJson(analysisSession);
+                    navigator.clipboard?.writeText?.(txt);
+                  }}
+                  onImportJson={() => {
+                    const txt = window.prompt("Paste analysis JSON:");
+                    if (!txt) return;
+                    const s = importAnalysisJson(txt);
+                    if (s) setAnalysisSession(s);
+                  }}
+                  onExportPgn={() => {
+                    const txt = exportAnalysisPgn(analysisSession);
+                    navigator.clipboard?.writeText?.(txt);
+                  }}
+                  onApplyToGame={() => applyAnalysisToGame()}
+                  canApply={analysisEnabled && analysisSession.selectedId !== analysisSession.rootId}
                 />
-              </div>
-            </div>
-          </div>
 
-          <div className="panelGrid">
-            {analysisEnabled ? (
-              <>
-                <div className="card">
-                  <h2 className="cardTitle">Move Tree</h2>
-                  <MoveTree
-                    session={analysisSession}
-                    activeNodeId={analysisSession.selectedId}
-                    onSelectNode={(id) => {
-                      setAnalysisSession((s) => selectNode(s, id));
-                      setSelected(null);
-                    }}
-                    onSetComment={(id, txt) => setAnalysisSession((s) => setNodeComment(s, id, txt))}
-                    isThinking={analysisThinking}
-                  />
-                  <div style={{ height: 10 }} />
+                <div style={{ height: 12 }} />
+
+                <Controls
+                  mode={mode}
+                  playAs={playAs}
+                  aiDifficulty={aiDifficulty}
+                  aiCustomMaxDepth={aiCustomMaxDepth}
+                  aiCustomThinkMs={aiCustomThinkMs}
+                  canUndo={cursor > 0}
+                  canRedo={cursor < positions.length - 1}
+                  canMove={canMoveNow && !aiThinking}
+                  onModeChange={(v) => {
+                    setMode(v);
+                    setSelected(null);
+                  }}
+                  onPlayAsChange={(v) => {
+                    setPlayAs(v);
+                    setSelected(null);
+                  }}
+                  onAiDifficultyChange={(v) => setAiDifficulty(v)}
+                  onAiCustomMaxDepthChange={(v) => setAiCustomMaxDepth(v)}
+                  onAiCustomThinkMsChange={(v) => setAiCustomThinkMs(v)}
+                  onNewGame={newGame}
+                  onUndo={undo}
+                  onRedo={redo}
+                  timePresetId={timePresetId}
+                  customMinutes={customMinutes}
+                  customIncrement={customIncrement}
+                  timeControlsLocked={timeControlsLocked || analysisEnabled}
+                  clockStarted={clockArmed}
+                  isPaused={clockManualPaused}
+                  onTimePresetChange={(id) => setTimePresetId(id)}
+                  onCustomMinutesChange={(v) => setCustomMinutes(Number(v))}
+                  onCustomIncrementChange={(v) => setCustomIncrement(Number(v))}
+                  onStartClock={() => {
+                    if (!canMoveNow) return;
+                    setClockArmed(true);
+                    setClockManualPaused(false);
+                    // Do NOT start ticking yet; ticking starts on first move.
+                    setClock((c) => ({
+                      ...c,
+                      isRunning: false,
+                      isPaused: false,
+                      activeColor: null,
+                      lastTickAt: null,
+                    }));
+                  }}
+                  onTogglePause={() => {
+                    if (!clockArmed) return;
+                    setClockManualPaused((p) => !p);
+                  }}
+                />
+
+                <ThemeSwitcher
+                  themeId={themeId}
+                  boardSchemeId={boardSchemeId}
+                  onChangeThemeId={(id) => setThemePrefs((p) => ({ ...p, themeId: id }))}
+                  onChangeBoardSchemeId={(id) => setThemePrefs((p) => ({ ...p, boardSchemeId: id }))}
+                />
+
+                <PieceSetPicker
+                  pieceSetId={pieceSetId}
+                  onChangePieceSetId={(id) => setPiecePrefs({ pieceSetId: id })}
+                />
+
+                <div className="buttonRow" style={{ marginTop: 10 }}>
+                  <button
+                    className="button buttonGhost"
+                    onClick={() => setPgnOpen(true)}
+                    aria-label="Open PGN import/export"
+                  >
+                    PGN…
+                  </button>
+                  <span className="pill">
+                    Share games via <span className="kbd">PGN</span>
+                  </span>
+                </div>
+
+                <div className="statusBar" role="status" aria-live="polite">
+                  <div className="statusText">{statusLine}</div>
                   <div className="statusHint">
-                    Click a node to navigate. Make a different move to add a new branch.
+                    {analysisEnabled
+                      ? "Analysis mode — explore freely; Apply to commit."
+                      : timeoutResult
+                        ? timeoutResult.reason
+                        : cursor !== positions.length - 1
+                          ? "Viewing history — return to latest to continue."
+                          : mode === "ai"
+                            ? `You are ${playAs === "w" ? "White" : "Black"}`
+                            : "Pass & play"}
                   </div>
                 </div>
 
-                <div className="card">
-                  <h2 className="cardTitle">Variations (Multi-PV)</h2>
-                  <PVList
-                    pvLines={analysisPvLines}
-                    onClickLine={(line) => {
-                      // Build the PV into the tree starting at currently selected node.
-                      const pv = line?.pv || [];
-                      if (!pv.length) return;
+                <div style={{ height: 10 }} />
 
-                      setAnalysisSession((s0) => {
-                        let s = s0;
-                        let parent = s.selectedId;
-                        for (const mv of pv) {
-                          s = addChildMove(s, parent, mv);
-                          parent = s.selectedId;
-                        }
-                        return s;
-                      });
-                      setSelected(null);
-                    }}
-                  />
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="card">
-                  <h2 className="cardTitle">Captured</h2>
-                  <div className="miniRow">
-                    <CapturedPanel
-                      title="White captured"
-                      pieces={captured.b}
-                      pieceToUnicode={PIECE_TO_UNICODE}
-                    />
-                    <CapturedPanel
-                      title="Black captured"
-                      pieces={captured.w}
-                      pieceToUnicode={PIECE_TO_UNICODE}
-                    />
+                {analysisEnabled && analysisThinking ? (
+                  <div className="aiThinkingRow" aria-label="Engine analysis indicator">
+                    <span className="crtThinkingDot" aria-hidden="true" />
+                    <span className="aiThinkingText">Analyzing…</span>
                   </div>
-                </div>
-
-                <div className="card">
-                  <h2 className="cardTitle">Move History</h2>
-                  <MoveHistory moves={moveStrings} cursor={cursor} onJump={onHistoryJump} />
-                  <div style={{ height: 10 }} />
-                  <div className="statusHint">
-                    Tip: click a move to time-travel. Resume by clicking the last move.
-                  </div>
-                  <div style={{ height: 8 }} />
-                  <div className="statusHint">
-                    Current:{" "}
-                    <span style={{ fontFamily: "var(--font-mono)" }}>
-                      {toSquare(position, "e1") ? "" : ""}
+                ) : mode === "ai" && aiThinking ? (
+                  <div className="aiThinkingRow" aria-label="AI thinking indicator">
+                    <span className="crtThinkingDot" aria-hidden="true" />
+                    <span className="aiThinkingText">
+                      Thinking…{" "}
+                      {aiInfo ? (
+                        <span style={{ opacity: 0.75 }}>
+                          (d{aiInfo.depth}, {Math.round(aiInfo.timeMs)}ms, {aiInfo.nodes} nodes)
+                        </span>
+                      ) : null}
                     </span>
                   </div>
-                  {mode === "ai" ? (
-                    <div className="statusHint" style={{ marginTop: 8 }}>
-                      AI: {aiDifficulty}
-                      {aiDifficulty === "custom" ? ` (≤d${aiCustomMaxDepth}, ${aiCustomThinkMs}ms)` : ""} —{" "}
-                      budget {aiLimits.timeMs}ms (hard {aiLimits.hardTimeMs}ms)
-                    </div>
-                  ) : null}
+                ) : null}
+
+                <div style={{ height: 10 }} />
+
+                <Clocks
+                  whiteMs={clock.remainingWMs}
+                  blackMs={clock.remainingBMs}
+                  activeColor={clock.isRunning && !clock.isPaused ? clock.activeColor : null}
+                  isRunning={clockRunning}
+                  isPaused={isClockPaused}
+                  labels={clocksLabels}
+                />
+
+                <div style={{ height: 12 }} />
+
+                <div className="boardWrap">
+                  <EvalBar rawEval={boardEvalRaw} />
+                  <div className={aiThinking ? "boardThinkingWrap" : ""}>
+                    <Board
+                      position={boardPosition}
+                      orientation={mode === "ai" ? playAs : "w"}
+                      pieceSetId={pieceSetId}
+                      selected={selected}
+                      legalTargets={legalTargetsForSelected}
+                      lastMove={lastMove}
+                      inCheckSquare={status.inCheckSquare}
+                      onSquareClick={onSquareClick}
+                      onPieceDrop={onPieceDrop}
+                      isMoveLegal={(from, to) => isMoveLegal(boardPosition, from, to)}
+                    />
+                  </div>
                 </div>
-              </>
-            )}
-          </div>
-        </div>
+              </div>
 
-        <PgnModal
-          open={pgnOpen}
-          onClose={() => setPgnOpen(false)}
-          positions={positions}
-          cursor={cursor}
-          analysisEnabled={analysisEnabled}
-          defaultHeaders={{
-            Event: "Retro Chess Terminal",
-            Site: "Local",
-            White: mode === "ai" ? (playAs === "w" ? "You" : "AI") : "White",
-            Black: mode === "ai" ? (playAs === "b" ? "You" : "AI") : "Black",
-          }}
-          onImportGame={(game) => {
-            // Replace main game state with imported moves.
-            cancelAiSearch();
-            setTimeoutResult(null);
+              <div className="panelGrid">
+                {analysisEnabled ? (
+                  <>
+                    <div className="card">
+                      <h2 className="cardTitle">Move Tree</h2>
+                      <MoveTree
+                        session={analysisSession}
+                        activeNodeId={analysisSession.selectedId}
+                        onSelectNode={(id) => {
+                          setAnalysisSession((s) => selectNode(s, id));
+                          setSelected(null);
+                        }}
+                        onSetComment={(id, txt) => setAnalysisSession((s) => setNodeComment(s, id, txt))}
+                        isThinking={analysisThinking}
+                      />
+                      <div style={{ height: 10 }} />
+                      <div className="statusHint">
+                        Click a node to navigate. Make a different move to add a new branch.
+                      </div>
+                    </div>
 
-            const newPositions = buildPositionsFromMoves(game.moves);
+                    <div className="card">
+                      <h2 className="cardTitle">Variations (Multi-PV)</h2>
+                      <PVList
+                        pvLines={analysisPvLines}
+                        onClickLine={(line) => {
+                          const pv = line?.pv || [];
+                          if (!pv.length) return;
 
-            setPositions(newPositions);
-            setCursor(newPositions.length - 1);
-            setSelected(null);
+                          setAnalysisSession((s0) => {
+                            let s = s0;
+                            let parent = s.selectedId;
+                            for (const mv of pv) {
+                              s = addChildMove(s, parent, mv);
+                              parent = s.selectedId;
+                            }
+                            return s;
+                          });
+                          setSelected(null);
+                        }}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="card">
+                      <h2 className="cardTitle">Captured</h2>
+                      <div className="miniRow">
+                        <CapturedPanel
+                          title="White captured"
+                          pieces={captured.b}
+                          pieceToUnicode={PIECE_TO_UNICODE}
+                        />
+                        <CapturedPanel
+                          title="Black captured"
+                          pieces={captured.w}
+                          pieceToUnicode={PIECE_TO_UNICODE}
+                        />
+                      </div>
+                    </div>
 
-            // Reset/disarm clocks and pause (requirements: reset/paused).
-            setClock(
-              createClockState({
-                baseMinutes: effectiveMinutes,
-                incrementSeconds: effectiveIncrement,
-              })
-            );
-            setClockArmed(false);
-            setClockManualPaused(false);
-            setClockVisibilityPaused(false);
-          }}
-        />
+                    <div className="card">
+                      <h2 className="cardTitle">Move History</h2>
+                      <MoveHistory moves={moveStrings} cursor={cursor} onJump={onHistoryJump} />
+                      <div style={{ height: 10 }} />
+                      <div className="statusHint">
+                        Tip: click a move to time-travel. Resume by clicking the last move.
+                      </div>
+                      <div style={{ height: 8 }} />
+                      <div className="statusHint">
+                        Current:{" "}
+                        <span style={{ fontFamily: "var(--font-mono)" }}>
+                          {toSquare(position, "e1") ? "" : ""}
+                        </span>
+                      </div>
+                      {mode === "ai" ? (
+                        <div className="statusHint" style={{ marginTop: 8 }}>
+                          AI: {aiDifficulty}
+                          {aiDifficulty === "custom" ? ` (≤d${aiCustomMaxDepth}, ${aiCustomThinkMs}ms)` : ""} —{" "}
+                          budget {aiLimits.timeMs}ms (hard {aiLimits.hardTimeMs}ms)
+                        </div>
+                      ) : null}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
 
+            <PgnModal
+              open={pgnOpen}
+              onClose={() => setPgnOpen(false)}
+              positions={positions}
+              cursor={cursor}
+              analysisEnabled={analysisEnabled}
+              defaultHeaders={{
+                Event: "Retro Chess Terminal",
+                Site: "Local",
+                White: mode === "ai" ? (playAs === "w" ? "You" : "AI") : "White",
+                Black: mode === "ai" ? (playAs === "b" ? "You" : "AI") : "Black",
+              }}
+              onImportGame={(game) => {
+                cancelAiSearch();
+                setTimeoutResult(null);
+
+                const newPositions = buildPositionsFromMoves(game.moves);
+
+                setPositions(newPositions);
+                setCursor(newPositions.length - 1);
+                setSelected(null);
+
+                setClock(
+                  createClockState({
+                    baseMinutes: effectiveMinutes,
+                    incrementSeconds: effectiveIncrement,
+                  })
+                );
+                setClockArmed(false);
+                setClockManualPaused(false);
+                setClockVisibilityPaused(false);
+              }}
+            />
+          </>
+        )}
         <div style={{ height: 18 }} />
 
         <div className="statusHint">
