@@ -23,7 +23,7 @@ import { loadPuzzleProgress, savePuzzleProgress } from "../puzzles/puzzleStorage
  * It uses an isolated board position initialized from puzzle FEN and does NOT modify
  * the main game/analysis timeline, clocks, or AI game state.
  */
-export default function PuzzleTrainer({ pieceSetId, onExit }) {
+export default function PuzzleTrainer({ pieceSetId, onExit, onPuzzleResult }) {
   const [mode, setMode] = useState("daily"); // daily | random | rated
   const [allowRetry, setAllowRetry] = useState(true);
 
@@ -205,6 +205,9 @@ export default function PuzzleTrainer({ pieceSetId, onExit }) {
     });
 
     setSolvedState(solved ? "solved" : "failed");
+
+    // Notify parent for SFX/haptics.
+    onPuzzleResult?.(Boolean(solved));
   };
 
   const onTryMove = (move) => {

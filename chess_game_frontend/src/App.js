@@ -28,6 +28,15 @@ import AnalysisControls from "./components/AnalysisControls";
 import ThemeSwitcher from "./components/ThemeSwitcher";
 import PieceSetPicker from "./components/PieceSetPicker";
 import PuzzleTrainer from "./components/PuzzleTrainer";
+import AudioSettings from "./components/AudioSettings";
+import { loadAudioPrefs, saveAudioPrefs } from "./audio/audioPrefs";
+import { getSfx, isAudioSupported } from "./audio/sfx";
+import {
+  isHapticsSupported,
+  vibrateCaptureOrCheck,
+  vibrateCheckmate,
+  vibrateMove,
+} from "./audio/haptics";
 import {
   applyThemeToDocument,
   loadThemePrefs,
@@ -79,6 +88,12 @@ function App() {
   const [{ themeId, boardSchemeId }, setThemePrefs] = useState(() => loadThemePrefs());
   const [{ pieceSetId }, setPiecePrefs] = useState(() => loadPieceSetPref());
 
+  // Sound + haptics preferences (persisted)
+  const [audioPrefs, setAudioPrefs] = useState(() => loadAudioPrefs());
+
+  // Accessibility announcements for critical events when sounds are disabled.
+  const [criticalAnnounce, setCriticalAnnounce] = useState("");
+
   // Apply theme on load and whenever selection changes.
   useEffect(() => {
     applyThemeToDocument(themeId, boardSchemeId);
@@ -88,6 +103,14 @@ function App() {
   useEffect(() => {
     savePieceSetPref(pieceSetId);
   }, [pieceSetId]);
+
+  useEffect(() => {
+    saveAudioPrefs(audioPrefs);
+    // Apply live to audio engine (no blocking).
+    const sfx = getSfx();
+    sfx.setEnabled(Boolean(audioPrefs.soundsEnabled));
+    sfx.setVolume(audioPrefs.volume);
+  }, [audioPrefs]);
 
   // Analysis mode (separate exploration timeline)
   const [analysisEnabled, setAnalysisEnabled] = useState(false);
@@ -283,8 +306,11 @@ function App() {
           }
     );
 
+    if (audioPrefs.soundsEnabled) getSfx().play("finish");
+
     // Pause clock immediately (authoritative), clear active side to avoid further ticks.
     setClock((c) => pauseClock({ ...c, activeColor: null, isRunning: false }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clock, clockRunning]);
 
   // Pause clocks when tab is hidden; resume when visible (if not manually paused and game is active).
@@ -312,6 +338,15 @@ function App() {
     if (!clockRunning) return;
     if (!gameEnded) return;
     setClock((c) => pauseClock({ ...c, isRunning: false, activeColor: null }));
+
+    if (audioPrefs.soundsEnabled) {
+      getSfx().play("finish");
+    } else {
+      if (status.state === "checkmate") setCriticalAnnounce("Game over. Checkmate.");
+      if (status.state === "stalemate") setCriticalAnnounce("Game over. Stalemate.");
+      if (status.state === "draw") setCriticalAnnounce("Game over. Draw.");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameEnded, clockRunning]);
 
   // -----------------------
@@ -512,17 +547,54 @@ function App() {
     });
   };
 
+  const playMoveFeedback = ({ move, nextStatus, wasAnalysis }) => {
+    const allowSounds = audioPrefs.soundsEnabled && (!wasAnalysis || audioPrefs.playInAnalysis);
+
+    // Determine sound kind.
+    const isCapture = Boolean(move?.captured);
+    const isPromotion = Boolean(move?.promotion);
+
+    if (allowSounds) {
+      const sfx = getSfx();
+      if (isPromotion) sfx.play("promotion");
+      else if (nextStatus?.state === "checkmate") sfx.play("checkmate");
+      else if (nextStatus?.state === "check") sfx.play("check");
+      else if (isCapture) sfx.play("capture");
+      else sfx.play("move");
+    } else {
+      // If sounds disabled, announce critical events for accessibility.
+      if (nextStatus?.state === "check") setCriticalAnnounce("Check.");
+      if (nextStatus?.state === "checkmate") setCriticalAnnounce("Checkmate.");
+    }
+
+    // Haptics: always gated by feature detection + reduced motion.
+    const hapticsOn = Boolean(audioPrefs.hapticsEnabled);
+    if (nextStatus?.state === "checkmate") {
+      vibrateCheckmate({ enabled: hapticsOn });
+    } else if (nextStatus?.state === "check" || isCapture) {
+      vibrateCaptureOrCheck({ enabled: hapticsOn });
+    } else {
+      vibrateMove({ enabled: hapticsOn });
+    }
+  };
+
   const pushMove = (move) => {
     // Settings lock begins at first move; if clocks were armed, start on first move.
     ensureClockStartedOnFirstMove(positionRef.current.toMove);
 
     const moverColor = positionRef.current.toMove;
     const next = applyMove(positionRef.current, move);
+
+    // Compute status for SFX/haptics based on resulting position.
+    const nextStatus = getGameStatus(next);
+
     pushPosition(next);
     setSelected(null);
 
     // After move is committed, apply increment + switch clocks.
     onMoveCompletedClockUpdate(moverColor);
+
+    playMoveFeedback({ move, nextStatus, wasAnalysis: false });
   };
 
   // AI turn loop: send SEARCH to worker whenever it's AI's move and we are at tip.
@@ -589,6 +661,8 @@ function App() {
 
     setTimeoutResult(null);
 
+    if (audioPrefs.soundsEnabled) getSfx().play("start");
+
     // Reset clock to selected settings and disarm/pause.
     setClock(
       createClockState({ baseMinutes: effectiveMinutes, incrementSeconds: effectiveIncrement })
@@ -603,6 +677,15 @@ function App() {
     cancelAiSearch();
     if (cursor === 0) return;
     setCursor((c) => Math.max(0, c - 1));
+    // If we had a selection and didn't move anywhere legal, treat as an illegal attempt.
+    if (selected) {
+      if (audioPrefs.soundsEnabled && (!analysisEnabled || audioPrefs.playInAnalysis)) {
+        getSfx().play("illegal");
+      }
+      // Light haptics for "reject".
+      vibrateMove({ enabled: Boolean(audioPrefs.hapticsEnabled) });
+    }
+
     setSelected(null);
   };
 
@@ -663,6 +746,10 @@ function App() {
     if (moved) {
       if (analysisEnabled) {
         setAnalysisSession((s) => addChildMove(s, s.selectedId, moved));
+        // Analysis is silent by default unless user opts in.
+        const nextPos = applyMove(boardPosition, moved);
+        const nextStatus = getGameStatus(nextPos);
+        playMoveFeedback({ move: moved, nextStatus, wasAnalysis: true });
       } else {
         pushMove(moved);
       }
@@ -690,10 +777,19 @@ function App() {
     }
 
     const move = makeMoveFromTo(boardPosition, from, to);
-    if (!move) return;
+    if (!move) {
+      if (audioPrefs.soundsEnabled && (!analysisEnabled || audioPrefs.playInAnalysis)) {
+        getSfx().play("illegal");
+      }
+      vibrateMove({ enabled: Boolean(audioPrefs.hapticsEnabled) });
+      return;
+    }
 
     if (analysisEnabled) {
       setAnalysisSession((s) => addChildMove(s, s.selectedId, move));
+      const nextPos = applyMove(boardPosition, move);
+      const nextStatus = getGameStatus(nextPos);
+      playMoveFeedback({ move, nextStatus, wasAnalysis: true });
     } else {
       pushMove(move);
     }
@@ -900,7 +996,20 @@ function App() {
         </div>
 
         {activeView === "puzzles" ? (
-          <PuzzleTrainer pieceSetId={pieceSetId} onExit={() => setActiveView("game")} />
+          <PuzzleTrainer
+            pieceSetId={pieceSetId}
+            onExit={() => setActiveView("game")}
+            onPuzzleResult={(ok) => {
+              if (audioPrefs.soundsEnabled) getSfx().play(ok ? "puzzleOk" : "puzzleBad");
+              // haptics respects reduced motion internally
+              // (puzzle haptics should still work when enabled)
+              // patterns differ for ok/bad
+              // eslint-disable-next-line no-unused-expressions
+              ok
+                ? vibrateCaptureOrCheck({ enabled: Boolean(audioPrefs.hapticsEnabled) })
+                : vibrateMove({ enabled: Boolean(audioPrefs.hapticsEnabled) });
+            }}
+          />
         ) : (
           <>
             <div className="layout">
@@ -1035,6 +1144,18 @@ function App() {
                             : "Pass & play"}
                   </div>
                 </div>
+
+                {/* Critical event announcements when sounds are disabled */}
+                <div className="srOnly" aria-live="polite">
+                  {criticalAnnounce}
+                </div>
+
+                <AudioSettings
+                  prefs={audioPrefs}
+                  audioSupported={isAudioSupported()}
+                  hapticsSupported={isHapticsSupported()}
+                  onChange={(p) => setAudioPrefs(p)}
+                />
 
                 <div style={{ height: 10 }} />
 
