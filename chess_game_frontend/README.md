@@ -5,9 +5,10 @@ This project provides a minimal React template with a clean, modern UI and minim
 ## Features
 
 - **Lightweight**: No heavy UI frameworks - uses only vanilla CSS and React
-- **Modern UI**: Clean, responsive design with KAVIA brand styling
 - **Fast**: Minimal dependencies for quick loading times
 - **Simple**: Easy to understand and modify
+- **Responsive AI**: Chess AI search runs in a Web Worker so the UI stays smooth while the AI thinks
+- **Adjustable difficulty**: Easy/Medium/Hard plus Custom (depth + think time)
 
 ## Getting Started
 

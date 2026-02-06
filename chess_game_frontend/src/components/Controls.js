@@ -16,13 +16,20 @@ const TIME_PRESETS = [
 export default function Controls({
   mode,
   playAs,
-  aiDepth,
+
+  // AI controls
+  aiDifficulty,
+  aiCustomMaxDepth,
+  aiCustomThinkMs,
+  onAiDifficultyChange,
+  onAiCustomMaxDepthChange,
+  onAiCustomThinkMsChange,
+
   canUndo,
   canRedo,
   canMove,
   onModeChange,
   onPlayAsChange,
-  onAiDepthChange,
   onNewGame,
   onUndo,
   onRedo,
@@ -41,8 +48,10 @@ export default function Controls({
   onTogglePause,
 }) {
   const selected = TIME_PRESETS.find((p) => p.id === timePresetId) || TIME_PRESETS[0];
-  const isCustom = selected.id === "custom";
+  const isCustomTime = selected.id === "custom";
   const settingsDisabled = Boolean(timeControlsLocked);
+
+  const aiIsCustom = aiDifficulty === "custom";
 
   return (
     <>
@@ -65,15 +74,46 @@ export default function Controls({
           <div className="label">AI difficulty</div>
           <select
             className="select"
-            value={aiDepth}
+            value={aiDifficulty}
             disabled={mode !== "ai" || settingsDisabled}
-            onChange={(e) => onAiDepthChange?.(Number(e.target.value))}
+            onChange={(e) => onAiDifficultyChange?.(e.target.value)}
             aria-label="AI difficulty"
           >
-            <option value={1}>Depth 1 (fast)</option>
-            <option value={2}>Depth 2 (balanced)</option>
-            <option value={3}>Depth 3 (tough)</option>
+            <option value="easy">Easy (quick)</option>
+            <option value="medium">Medium</option>
+            <option value="hard">Hard</option>
+            <option value="custom">Custom…</option>
           </select>
+        </div>
+
+        <div className="controlRow">
+          <div className="label">AI custom (depth / ms)</div>
+          <div className="timeCustomRow">
+            <input
+              className="select timeInput"
+              type="number"
+              min={1}
+              max={10}
+              step={1}
+              value={aiCustomMaxDepth}
+              disabled={mode !== "ai" || settingsDisabled || !aiIsCustom}
+              onChange={(e) => onAiCustomMaxDepthChange?.(Number(e.target.value))}
+              aria-label="AI custom maximum depth"
+              placeholder="Depth"
+            />
+            <input
+              className="select timeInput"
+              type="number"
+              min={50}
+              max={5000}
+              step={50}
+              value={aiCustomThinkMs}
+              disabled={mode !== "ai" || settingsDisabled || !aiIsCustom}
+              onChange={(e) => onAiCustomThinkMsChange?.(Number(e.target.value))}
+              aria-label="AI custom think time ms"
+              placeholder="Think ms"
+            />
+          </div>
         </div>
 
         <div className="controlRow">
@@ -159,7 +199,7 @@ export default function Controls({
               min={0}
               step={1}
               value={customMinutes}
-              disabled={!isCustom || settingsDisabled}
+              disabled={!isCustomTime || settingsDisabled}
               onChange={(e) => onCustomMinutesChange?.(e.target.value)}
               aria-label="Custom minutes"
               placeholder="Minutes"
@@ -170,7 +210,7 @@ export default function Controls({
               min={0}
               step={1}
               value={customIncrement}
-              disabled={!isCustom || settingsDisabled}
+              disabled={!isCustomTime || settingsDisabled}
               onChange={(e) => onCustomIncrementChange?.(e.target.value)}
               aria-label="Custom increment seconds"
               placeholder="Increment"

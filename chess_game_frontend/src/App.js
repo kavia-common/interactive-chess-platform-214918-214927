@@ -10,7 +10,6 @@ import {
   toAlgebraic,
   hasOnlyKing,
 } from "./chess/engine";
-import { chooseAiMove } from "./chess/ai";
 import {
   PIECE_TO_UNICODE,
   capturedFromMove,
@@ -32,6 +31,8 @@ import {
   switchActiveAfterMove,
   tickClock,
 } from "./chess/clock";
+import { createAiWorker } from "./workers/createAiWorker";
+import { getLimitsForDifficulty } from "./chess/ai/limits";
 
 /**
  * PUBLIC_INTERFACE
@@ -39,12 +40,16 @@ import {
  * move history navigation, captured pieces, and single-player AI.
  *
  * This version includes chess clocks with selectable time controls, pause/resume,
- * flag detection, and integration for both local and AI modes.
+ * flag detection, and AI search offloaded to a Web Worker for responsive UI.
  */
 function App() {
   const [mode, setMode] = useState("ai"); // "local" | "ai"
   const [playAs, setPlayAs] = useState("w"); // used when mode === "ai"
-  const [aiDepth, setAiDepth] = useState(2);
+
+  // AI controls (difficulty presets + custom)
+  const [aiDifficulty, setAiDifficulty] = useState("medium"); // easy|medium|hard|custom
+  const [aiCustomMaxDepth, setAiCustomMaxDepth] = useState(6);
+  const [aiCustomThinkMs, setAiCustomThinkMs] = useState(800);
 
   // Timeline: positions[0] is initial, positions[cursor] is current view.
   const [positions, setPositions] = useState([createInitialPosition()]);
@@ -75,11 +80,6 @@ function App() {
     return cap;
   }, [positions, cursor]);
 
-  const isHumanTurn = useMemo(() => {
-    if (mode === "local") return true;
-    return position.toMove === playAs;
-  }, [mode, position.toMove, playAs]);
-
   // -----------------------
   // Time controls + clocks
   // -----------------------
@@ -104,7 +104,10 @@ function App() {
     return cursor > 0 || clockArmed;
   }, [cursor, clockArmed]);
 
-  const gameEnded = useMemo(() => status.state !== "playing" && status.state !== "check", [status.state]);
+  const gameEnded = useMemo(
+    () => status.state !== "playing" && status.state !== "check",
+    [status.state]
+  );
 
   const isClockPaused = clockManualPaused || clockVisibilityPaused;
 
@@ -143,13 +146,20 @@ function App() {
     [timePresetId]
   );
 
-  const effectiveMinutes = selectedPreset.id === "custom" ? Number(customMinutes) : selectedPreset.minutes;
-  const effectiveIncrement = selectedPreset.id === "custom" ? Number(customIncrement) : selectedPreset.increment;
+  const effectiveMinutes =
+    selectedPreset.id === "custom" ? Number(customMinutes) : selectedPreset.minutes;
+  const effectiveIncrement =
+    selectedPreset.id === "custom" ? Number(customIncrement) : selectedPreset.increment;
 
   // When settings change (and not locked), update the base clock state.
   useEffect(() => {
     if (timeControlsLocked) return;
-    setClock(createClockState({ baseMinutes: effectiveMinutes, incrementSeconds: effectiveIncrement }));
+    setClock(
+      createClockState({
+        baseMinutes: effectiveMinutes,
+        incrementSeconds: effectiveIncrement,
+      })
+    );
     setTimeoutResult(null);
   }, [timeControlsLocked, effectiveMinutes, effectiveIncrement]);
 
@@ -226,6 +236,125 @@ function App() {
     setClock((c) => pauseClock({ ...c, isRunning: false, activeColor: null }));
   }, [gameEnded, clockRunning]);
 
+  // -----------------------
+  // AI Worker integration
+  // -----------------------
+  const aiWorkerRef = useRef(null);
+  const [aiThinking, setAiThinking] = useState(false);
+  const [aiInfo, setAiInfo] = useState(null); // {depth,nodes,timeMs,eval}
+  const activeSearchRef = useRef(0);
+
+  const isHumanTurn = useMemo(() => {
+    if (mode === "local") return true;
+    return position.toMove === playAs;
+  }, [mode, position.toMove, playAs]);
+
+  const aiSide = useMemo(() => {
+    if (mode !== "ai") return null;
+    return otherColor(playAs);
+  }, [mode, playAs]);
+
+  const aiLimits = useMemo(() => {
+    return getLimitsForDifficulty(aiDifficulty, {
+      maxDepth: aiCustomMaxDepth,
+      timeMs: aiCustomThinkMs,
+      hardTimeMs: Math.round(aiCustomThinkMs * 1.5),
+    });
+  }, [aiDifficulty, aiCustomMaxDepth, aiCustomThinkMs]);
+
+  const cancelAiSearch = () => {
+    if (!aiWorkerRef.current) return;
+    activeSearchRef.current += 1;
+    aiWorkerRef.current.postMessage({ type: "CANCEL" });
+    setAiThinking(false);
+    setAiInfo(null);
+  };
+
+  useEffect(() => {
+    // Create worker once
+    const w = createAiWorker();
+    aiWorkerRef.current = w;
+
+    w.onmessage = (e) => {
+      const msg = e.data;
+      if (!msg || !msg.type) return;
+
+      if (msg.type === "INFO") {
+        setAiInfo({
+          depth: msg.depth,
+          nodes: msg.nodes,
+          timeMs: msg.timeMs,
+          eval: msg.eval,
+        });
+        return;
+      }
+
+      if (msg.type === "CANCELLED") {
+        setAiThinking(false);
+        setAiInfo(null);
+        return;
+      }
+
+      if (msg.type === "RESULT") {
+        setAiThinking(false);
+
+        // If game state changed while thinking, ignore (we also cancel on changes)
+        if (
+          mode !== "ai" ||
+          cursor !== positions.length - 1 ||
+          positionRef.current.toMove === playAs ||
+          status.state !== "playing" ||
+          timeoutResult
+        ) {
+          setAiInfo(null);
+          return;
+        }
+
+        const bestMove = msg.bestMove;
+
+        setAiInfo({
+          depth: msg.depthReached,
+          nodes: msg.nodes,
+          timeMs: msg.timeMs,
+          eval: msg.eval,
+        });
+
+        if (!bestMove) return;
+
+        // Validate and apply via engine pipeline (single source of truth).
+        // Ensure it's still legal for current position (protect against stale results).
+        const legalNow = getLegalMovesForSquare(positionRef.current, bestMove.from);
+        const isStillLegal = legalNow.some(
+          (m) =>
+            m.to === bestMove.to &&
+            (m.promotion || "") === (bestMove.promotion || "") &&
+            Boolean(m.isCastling) === Boolean(bestMove.isCastling) &&
+            Boolean(m.isEnPassant) === Boolean(bestMove.isEnPassant)
+        );
+
+        if (!isStillLegal) return;
+
+        pushMove(bestMove);
+      }
+    };
+
+    return () => {
+      try {
+        w.terminate();
+      } catch {
+        // ignore
+      }
+      aiWorkerRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Cancel search on disruptive UI/game changes
+  useEffect(() => {
+    cancelAiSearch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, playAs, cursor]);
+
   // Keyboard shortcuts: undo/redo with Ctrl/Cmd+Z / Ctrl/Cmd+Y
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -247,52 +376,6 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cursor, positions]);
-
-  // AI turn loop: whenever it's AI's move and game not ended and we're at tip.
-  useEffect(() => {
-    const shouldAiMove =
-      mode === "ai" &&
-      cursor === positions.length - 1 &&
-      position.toMove !== playAs &&
-      status.state === "playing" &&
-      !timeoutResult;
-
-    if (!shouldAiMove) return;
-
-    // Ensure the active side is set to AI while it is thinking (if clocks are armed).
-    if (clockArmed && clockRunning && !isClockPaused) {
-      setClock((c) => {
-        const started = c.isRunning ? c : startClock(c, { activeColor: null, now: Date.now() });
-        return setActiveColor(started, position.toMove, { now: Date.now() });
-      });
-    }
-
-    const t = window.setTimeout(() => {
-      const aiMove = chooseAiMove(position, {
-        depth: aiDepth,
-        fallbackGreedy: true,
-      });
-      if (!aiMove) return;
-
-      // Apply move; this will also switch clock + increment via pushMove.
-      pushMove(aiMove);
-    }, 220);
-
-    return () => window.clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    mode,
-    cursor,
-    positions.length,
-    position,
-    playAs,
-    aiDepth,
-    status.state,
-    timeoutResult,
-    clockArmed,
-    clockRunning,
-    isClockPaused,
-  ]);
 
   const pushPosition = (nextPosition) => {
     // If user is time-traveling, truncate future first.
@@ -339,10 +422,10 @@ function App() {
 
   const pushMove = (move) => {
     // Settings lock begins at first move; if clocks were armed, start on first move.
-    ensureClockStartedOnFirstMove(position.toMove);
+    ensureClockStartedOnFirstMove(positionRef.current.toMove);
 
-    const moverColor = position.toMove;
-    const next = applyMove(position, move);
+    const moverColor = positionRef.current.toMove;
+    const next = applyMove(positionRef.current, move);
     pushPosition(next);
     setSelected(null);
 
@@ -350,8 +433,63 @@ function App() {
     onMoveCompletedClockUpdate(moverColor);
   };
 
+  // AI turn loop: send SEARCH to worker whenever it's AI's move and we are at tip.
+  useEffect(() => {
+    const shouldAiMove =
+      mode === "ai" &&
+      cursor === positions.length - 1 &&
+      position.toMove !== playAs &&
+      status.state === "playing" &&
+      !timeoutResult;
+
+    if (!shouldAiMove) {
+      setAiThinking(false);
+      return;
+    }
+
+    if (!aiWorkerRef.current) return;
+
+    // Ensure the active side is set to AI while it is thinking (if clocks are armed).
+    if (clockArmed && clockRunning && !isClockPaused) {
+      setClock((c) => {
+        const started = c.isRunning ? c : startClock(c, { activeColor: null, now: Date.now() });
+        return setActiveColor(started, position.toMove, { now: Date.now() });
+      });
+    }
+
+    // Cancel any previous and start a new search id
+    cancelAiSearch();
+    const searchId = (activeSearchRef.current += 1);
+
+    setAiThinking(true);
+    setAiInfo(null);
+
+    aiWorkerRef.current.postMessage({
+      type: "SEARCH",
+      position,
+      sideToMove: position.toMove,
+      limits: aiLimits,
+      ttSeed: searchId,
+    });
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    mode,
+    cursor,
+    positions.length,
+    position,
+    playAs,
+    status.state,
+    timeoutResult,
+    aiLimits,
+    clockArmed,
+    clockRunning,
+    isClockPaused,
+  ]);
+
   // PUBLIC_INTERFACE
   const newGame = () => {
+    cancelAiSearch();
     setPositions([createInitialPosition()]);
     setCursor(0);
     setSelected(null);
@@ -359,7 +497,9 @@ function App() {
     setTimeoutResult(null);
 
     // Reset clock to selected settings and disarm/pause.
-    setClock(createClockState({ baseMinutes: effectiveMinutes, incrementSeconds: effectiveIncrement }));
+    setClock(
+      createClockState({ baseMinutes: effectiveMinutes, incrementSeconds: effectiveIncrement })
+    );
     setClockArmed(false);
     setClockManualPaused(false);
     setClockVisibilityPaused(false);
@@ -367,6 +507,7 @@ function App() {
 
   // PUBLIC_INTERFACE
   const undo = () => {
+    cancelAiSearch();
     if (cursor === 0) return;
     setCursor((c) => Math.max(0, c - 1));
     setSelected(null);
@@ -374,17 +515,31 @@ function App() {
 
   // PUBLIC_INTERFACE
   const redo = () => {
+    cancelAiSearch();
     if (cursor >= positions.length - 1) return;
     setCursor((c) => Math.min(positions.length - 1, c + 1));
     setSelected(null);
   };
 
   const onHistoryJump = (targetCursor) => {
+    cancelAiSearch();
     setCursor(targetCursor);
     setSelected(null);
   };
 
+  const canMoveNow = cursor === positions.length - 1 && status.state === "playing" && !timeoutResult;
+
+  // Disable interactions while AI is thinking (for AI side), keep local mode unaffected.
+  const inputLocked = useMemo(() => {
+    if (!canMoveNow) return true;
+    if (mode !== "ai") return false;
+    if (!aiThinking) return false;
+    // While AI thinks, lock user input entirely to avoid divergence.
+    return true;
+  }, [canMoveNow, mode, aiThinking]);
+
   const onSquareClick = (sq) => {
+    if (inputLocked) return;
     if (timeoutResult) return;
     if (status.state !== "playing") return;
     if (!isHumanTurn) return;
@@ -422,6 +577,7 @@ function App() {
   };
 
   const onPieceDrop = (from, to) => {
+    if (inputLocked) return;
     if (timeoutResult) return;
     if (status.state !== "playing") return;
     if (!isHumanTurn) return;
@@ -475,8 +631,6 @@ function App() {
     return { w: "White", b: "Black" };
   }, [mode, playAs]);
 
-  const canMoveNow = cursor === positions.length - 1 && status.state === "playing" && !timeoutResult;
-
   return (
     <div className="App crt">
       <div className="container">
@@ -505,10 +659,12 @@ function App() {
             <Controls
               mode={mode}
               playAs={playAs}
-              aiDepth={aiDepth}
+              aiDifficulty={aiDifficulty}
+              aiCustomMaxDepth={aiCustomMaxDepth}
+              aiCustomThinkMs={aiCustomThinkMs}
               canUndo={cursor > 0}
               canRedo={cursor < positions.length - 1}
-              canMove={canMoveNow}
+              canMove={canMoveNow && !aiThinking}
               onModeChange={(v) => {
                 setMode(v);
                 setSelected(null);
@@ -517,7 +673,9 @@ function App() {
                 setPlayAs(v);
                 setSelected(null);
               }}
-              onAiDepthChange={(v) => setAiDepth(v)}
+              onAiDifficultyChange={(v) => setAiDifficulty(v)}
+              onAiCustomMaxDepthChange={(v) => setAiCustomMaxDepth(v)}
+              onAiCustomThinkMsChange={(v) => setAiCustomThinkMs(v)}
               onNewGame={newGame}
               onUndo={undo}
               onRedo={redo}
@@ -535,7 +693,13 @@ function App() {
                 setClockArmed(true);
                 setClockManualPaused(false);
                 // Do NOT start ticking yet; ticking starts on first move.
-                setClock((c) => ({ ...c, isRunning: false, isPaused: false, activeColor: null, lastTickAt: null }));
+                setClock((c) => ({
+                  ...c,
+                  isRunning: false,
+                  isPaused: false,
+                  activeColor: null,
+                  lastTickAt: null,
+                }));
               }}
               onTogglePause={() => {
                 if (!clockArmed) return;
@@ -556,7 +720,23 @@ function App() {
               </div>
             </div>
 
-            <div style={{ height: 12 }} />
+            <div style={{ height: 10 }} />
+
+            {mode === "ai" && aiThinking ? (
+              <div className="aiThinkingRow" aria-label="AI thinking indicator">
+                <span className="crtThinkingDot" aria-hidden="true" />
+                <span className="aiThinkingText">
+                  Thinking…{" "}
+                  {aiInfo ? (
+                    <span style={{ opacity: 0.75 }}>
+                      (d{aiInfo.depth}, {Math.round(aiInfo.timeMs)}ms, {aiInfo.nodes} nodes)
+                    </span>
+                  ) : null}
+                </span>
+              </div>
+            ) : null}
+
+            <div style={{ height: 10 }} />
 
             <Clocks
               whiteMs={clock.remainingWMs}
@@ -570,17 +750,19 @@ function App() {
             <div style={{ height: 12 }} />
 
             <div className="boardWrap">
-              <Board
-                position={position}
-                orientation={mode === "ai" ? playAs : "w"}
-                selected={selected}
-                legalTargets={legalTargetsForSelected}
-                lastMove={lastMove}
-                inCheckSquare={status.inCheckSquare}
-                onSquareClick={onSquareClick}
-                onPieceDrop={onPieceDrop}
-                isMoveLegal={(from, to) => isMoveLegal(position, from, to)}
-              />
+              <div className={aiThinking ? "boardThinkingWrap" : ""}>
+                <Board
+                  position={position}
+                  orientation={mode === "ai" ? playAs : "w"}
+                  selected={selected}
+                  legalTargets={legalTargetsForSelected}
+                  lastMove={lastMove}
+                  inCheckSquare={status.inCheckSquare}
+                  onSquareClick={onSquareClick}
+                  onPieceDrop={onPieceDrop}
+                  isMoveLegal={(from, to) => isMoveLegal(position, from, to)}
+                />
+              </div>
             </div>
           </div>
 
@@ -603,11 +785,7 @@ function App() {
 
             <div className="card">
               <h2 className="cardTitle">Move History</h2>
-              <MoveHistory
-                moves={moveStrings}
-                cursor={cursor}
-                onJump={onHistoryJump}
-              />
+              <MoveHistory moves={moveStrings} cursor={cursor} onJump={onHistoryJump} />
               <div style={{ height: 10 }} />
               <div className="statusHint">
                 Tip: click a move to time-travel. Resume by clicking the last move.
@@ -619,6 +797,13 @@ function App() {
                   {toSquare(position, "e1") ? "" : ""}
                 </span>
               </div>
+              {mode === "ai" ? (
+                <div className="statusHint" style={{ marginTop: 8 }}>
+                  AI: {aiDifficulty}
+                  {aiDifficulty === "custom" ? ` (≤d${aiCustomMaxDepth}, ${aiCustomThinkMs}ms)` : ""} —{" "}
+                  budget {aiLimits.timeMs}ms (hard {aiLimits.hardTimeMs}ms)
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

@@ -543,3 +543,44 @@
 .clockWhite .clockLabel {
   color: rgba(17, 24, 39, 0.70);
 }
+
+/* AI thinking indicator (CRT vibe) */
+.aiThinkingRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  background: rgba(59, 130, 246, 0.06);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.05), 0 0 24px rgba(59, 130, 246, 0.12);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.aiThinkingText {
+  letter-spacing: 0.03em;
+}
+
+.crtThinkingDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--primary);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.20), 0 0 18px rgba(59, 130, 246, 0.35);
+  animation: crtBlink 0.9s steps(2, jump-none) infinite;
+}
+
+@keyframes crtBlink {
+  0% { opacity: 0.25; transform: scale(0.95); }
+  50% { opacity: 1; transform: scale(1.05); }
+  100% { opacity: 0.25; transform: scale(0.95); }
+}
+
+/* Subtle board glow while worker is thinking */
+.boardThinkingWrap .board {
+  box-shadow:
+    0 0 0 3px rgba(59, 130, 246, 0.12),
+    0 0 44px rgba(59, 130, 246, 0.22),
+    0 16px 50px rgba(17, 24, 39, 0.12);
+}
