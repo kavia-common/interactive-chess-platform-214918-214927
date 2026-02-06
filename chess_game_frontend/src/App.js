@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 import {
   applyMove,
@@ -8,6 +8,7 @@ import {
   isMoveLegal,
   makeMoveFromTo,
   toAlgebraic,
+  hasOnlyKing,
 } from "./chess/engine";
 import { chooseAiMove } from "./chess/ai";
 import {
@@ -19,12 +20,26 @@ import {
 import Board from "./components/Board";
 import MoveHistory from "./components/MoveHistory";
 import CapturedPanel from "./components/CapturedPanel";
-import Controls from "./components/Controls";
+import Controls, { TIME_PRESETS } from "./components/Controls";
+import Clocks from "./components/Clocks";
+import {
+  createClockState,
+  getFlaggedColor,
+  pauseClock,
+  resumeClock,
+  setActiveColor,
+  startClock,
+  switchActiveAfterMove,
+  tickClock,
+} from "./chess/clock";
 
 /**
  * PUBLIC_INTERFACE
  * App renders the full retro-themed chess SPA: interactive board, controls,
  * move history navigation, captured pieces, and single-player AI.
+ *
+ * This version includes chess clocks with selectable time controls, pause/resume,
+ * flag detection, and integration for both local and AI modes.
  */
 function App() {
   const [mode, setMode] = useState("ai"); // "local" | "ai"
@@ -65,6 +80,152 @@ function App() {
     return position.toMove === playAs;
   }, [mode, position.toMove, playAs]);
 
+  // -----------------------
+  // Time controls + clocks
+  // -----------------------
+  const [timePresetId, setTimePresetId] = useState("blitz-5-0");
+  const [customMinutes, setCustomMinutes] = useState(5);
+  const [customIncrement, setCustomIncrement] = useState(0);
+
+  // "Armed" means user pressed Start. Actual ticking starts on first move.
+  const [clockArmed, setClockArmed] = useState(false);
+
+  // Manual pause (user). Visibility auto-pause is tracked separately.
+  const [clockManualPaused, setClockManualPaused] = useState(false);
+  const [clockVisibilityPaused, setClockVisibilityPaused] = useState(false);
+
+  // Authoritative clock state lives here.
+  const [clock, setClock] = useState(() =>
+    createClockState({ baseMinutes: 5, incrementSeconds: 0 })
+  );
+
+  const timeControlsLocked = useMemo(() => {
+    // Lock when the game has begun (first move made) OR clocks are armed.
+    return cursor > 0 || clockArmed;
+  }, [cursor, clockArmed]);
+
+  const gameEnded = useMemo(() => status.state !== "playing" && status.state !== "check", [status.state]);
+
+  const isClockPaused = clockManualPaused || clockVisibilityPaused;
+
+  const clockRunning = useMemo(() => {
+    // We allow running only if armed and game not ended and at tip (no time-travel).
+    if (!clockArmed) return false;
+    if (cursor !== positions.length - 1) return false;
+    if (gameEnded) return false;
+    return true;
+  }, [clockArmed, cursor, positions.length, gameEnded]);
+
+  const [timeoutResult, setTimeoutResult] = useState(null);
+  // { state: "timeout"|"timeout-draw", loser?: "w"|"b", winner?: "w"|"b", reason: string }
+
+  // Keep refs for use inside timers/effects without stale closures.
+  const clockRef = useRef(clock);
+  const positionRef = useRef(position);
+  const clockRunningRef = useRef(clockRunning);
+  const pausedRef = useRef(isClockPaused);
+
+  useEffect(() => {
+    clockRef.current = clock;
+  }, [clock]);
+  useEffect(() => {
+    positionRef.current = position;
+  }, [position]);
+  useEffect(() => {
+    clockRunningRef.current = clockRunning;
+  }, [clockRunning]);
+  useEffect(() => {
+    pausedRef.current = isClockPaused;
+  }, [isClockPaused]);
+
+  const selectedPreset = useMemo(
+    () => TIME_PRESETS.find((p) => p.id === timePresetId) || TIME_PRESETS[0],
+    [timePresetId]
+  );
+
+  const effectiveMinutes = selectedPreset.id === "custom" ? Number(customMinutes) : selectedPreset.minutes;
+  const effectiveIncrement = selectedPreset.id === "custom" ? Number(customIncrement) : selectedPreset.increment;
+
+  // When settings change (and not locked), update the base clock state.
+  useEffect(() => {
+    if (timeControlsLocked) return;
+    setClock(createClockState({ baseMinutes: effectiveMinutes, incrementSeconds: effectiveIncrement }));
+    setTimeoutResult(null);
+  }, [timeControlsLocked, effectiveMinutes, effectiveIncrement]);
+
+  // Tick loop: authoritative tick based on precise Date.now deltas.
+  useEffect(() => {
+    if (!clockRunning) return undefined;
+
+    const t = window.setInterval(() => {
+      if (!clockRunningRef.current) return;
+      if (pausedRef.current) return;
+
+      const now = Date.now();
+      setClock((c) => tickClock(c, now));
+    }, 250);
+
+    return () => window.clearInterval(t);
+  }, [clockRunning]);
+
+  // Flag detection effect (when clock changes).
+  useEffect(() => {
+    if (!clockRunning) return;
+    const flagged = getFlaggedColor(clock);
+    if (!flagged) return;
+
+    // Stop clocks and set a game result.
+    const opponent = otherColor(flagged);
+
+    // Simple rule requested:
+    // If opponent has only king, treat as draw on flag; otherwise flagged side loses.
+    const oppHasOnlyKing = hasOnlyKing(positionRef.current, opponent);
+
+    setTimeoutResult(
+      oppHasOnlyKing
+        ? {
+            state: "timeout-draw",
+            reason: "Flag fall, but opponent has only king (insufficient mating material).",
+          }
+        : {
+            state: "timeout",
+            loser: flagged,
+            winner: opponent,
+            reason: `${flagged === "w" ? "White" : "Black"} ran out of time.`,
+          }
+    );
+
+    // Pause clock immediately (authoritative), clear active side to avoid further ticks.
+    setClock((c) => pauseClock({ ...c, activeColor: null, isRunning: false }));
+  }, [clock, clockRunning]);
+
+  // Pause clocks when tab is hidden; resume when visible (if not manually paused and game is active).
+  useEffect(() => {
+    const onVis = () => {
+      const hidden = document.visibilityState !== "visible";
+      setClockVisibilityPaused(hidden);
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
+  // Mirror pause state into clock object (so lastTickAt is managed correctly).
+  useEffect(() => {
+    if (!clockRunning) return;
+    if (isClockPaused) {
+      setClock((c) => pauseClock(c));
+    } else {
+      setClock((c) => resumeClock(c, { now: Date.now() }));
+    }
+  }, [isClockPaused, clockRunning]);
+
+  // If the game ends by normal rules, stop clocks.
+  useEffect(() => {
+    if (!clockRunning) return;
+    if (!gameEnded) return;
+    setClock((c) => pauseClock({ ...c, isRunning: false, activeColor: null }));
+  }, [gameEnded, clockRunning]);
+
   // Keyboard shortcuts: undo/redo with Ctrl/Cmd+Z / Ctrl/Cmd+Y
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -93,9 +254,18 @@ function App() {
       mode === "ai" &&
       cursor === positions.length - 1 &&
       position.toMove !== playAs &&
-      status.state === "playing";
+      status.state === "playing" &&
+      !timeoutResult;
 
     if (!shouldAiMove) return;
+
+    // Ensure the active side is set to AI while it is thinking (if clocks are armed).
+    if (clockArmed && clockRunning && !isClockPaused) {
+      setClock((c) => {
+        const started = c.isRunning ? c : startClock(c, { activeColor: null, now: Date.now() });
+        return setActiveColor(started, position.toMove, { now: Date.now() });
+      });
+    }
 
     const t = window.setTimeout(() => {
       const aiMove = chooseAiMove(position, {
@@ -103,12 +273,26 @@ function App() {
         fallbackGreedy: true,
       });
       if (!aiMove) return;
+
+      // Apply move; this will also switch clock + increment via pushMove.
       pushMove(aiMove);
     }, 220);
 
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, cursor, positions.length, position, playAs, aiDepth, status.state]);
+  }, [
+    mode,
+    cursor,
+    positions.length,
+    position,
+    playAs,
+    aiDepth,
+    status.state,
+    timeoutResult,
+    clockArmed,
+    clockRunning,
+    isClockPaused,
+  ]);
 
   const pushPosition = (nextPosition) => {
     // If user is time-traveling, truncate future first.
@@ -117,10 +301,53 @@ function App() {
     setCursor(newPositions.length - 1);
   };
 
+  const ensureClockStartedOnFirstMove = (moverColor) => {
+    if (!clockArmed) return;
+
+    setClock((c) => {
+      // If clock isn't running yet, start it and set active to mover side.
+      if (!c.isRunning) {
+        const started = startClock(c, { activeColor: moverColor, now: Date.now() });
+        return started;
+      }
+      // If it is running but no active color, set it.
+      if (!c.activeColor) {
+        return setActiveColor(c, moverColor, { now: Date.now() });
+      }
+      return c;
+    });
+  };
+
+  const onMoveCompletedClockUpdate = (moverColor) => {
+    if (!clockArmed) return;
+
+    // Tick right now to "freeze" elapsed time before applying increment/switch.
+    const now = Date.now();
+    setClock((c0) => {
+      const c1 = tickClock(c0, now);
+
+      // If clock not started yet (first move), start now and don't burn time before move.
+      // We treat the first move as the moment clocks begin; so we set lastTickAt=now.
+      const c2 = c1.isRunning ? c1 : startClock(c1, { activeColor: moverColor, now });
+      const c3 = { ...c2, lastTickAt: now };
+
+      // Apply increment to mover, then switch active to opponent.
+      const switched = switchActiveAfterMove(c3, moverColor, { now });
+      return switched;
+    });
+  };
+
   const pushMove = (move) => {
+    // Settings lock begins at first move; if clocks were armed, start on first move.
+    ensureClockStartedOnFirstMove(position.toMove);
+
+    const moverColor = position.toMove;
     const next = applyMove(position, move);
     pushPosition(next);
     setSelected(null);
+
+    // After move is committed, apply increment + switch clocks.
+    onMoveCompletedClockUpdate(moverColor);
   };
 
   // PUBLIC_INTERFACE
@@ -128,6 +355,14 @@ function App() {
     setPositions([createInitialPosition()]);
     setCursor(0);
     setSelected(null);
+
+    setTimeoutResult(null);
+
+    // Reset clock to selected settings and disarm/pause.
+    setClock(createClockState({ baseMinutes: effectiveMinutes, incrementSeconds: effectiveIncrement }));
+    setClockArmed(false);
+    setClockManualPaused(false);
+    setClockVisibilityPaused(false);
   };
 
   // PUBLIC_INTERFACE
@@ -150,6 +385,7 @@ function App() {
   };
 
   const onSquareClick = (sq) => {
+    if (timeoutResult) return;
     if (status.state !== "playing") return;
     if (!isHumanTurn) return;
     if (cursor !== positions.length - 1) return; // disallow move while time-traveling
@@ -186,6 +422,7 @@ function App() {
   };
 
   const onPieceDrop = (from, to) => {
+    if (timeoutResult) return;
     if (status.state !== "playing") return;
     if (!isHumanTurn) return;
     if (cursor !== positions.length - 1) return;
@@ -210,6 +447,14 @@ function App() {
   }, [positions]);
 
   const statusLine = useMemo(() => {
+    if (timeoutResult?.state === "timeout") {
+      const winner = timeoutResult.winner === "w" ? "White" : "Black";
+      return `Timeout — ${winner} wins.`;
+    }
+    if (timeoutResult?.state === "timeout-draw") {
+      return "Timeout — draw (insufficient mating material).";
+    }
+
     const base = `Turn: ${position.toMove === "w" ? "White" : "Black"}`;
     if (status.state === "checkmate") {
       const winner = status.winner === "w" ? "White" : "Black";
@@ -219,7 +464,18 @@ function App() {
     if (status.state === "draw") return "Draw.";
     if (status.state === "check") return `${base} — Check!`;
     return base;
-  }, [position.toMove, status]);
+  }, [position.toMove, status, timeoutResult]);
+
+  const clocksLabels = useMemo(() => {
+    if (mode === "ai") {
+      return playAs === "w"
+        ? { w: "You (White)", b: "AI (Black)" }
+        : { w: "AI (White)", b: "You (Black)" };
+    }
+    return { w: "White", b: "Black" };
+  }, [mode, playAs]);
+
+  const canMoveNow = cursor === positions.length - 1 && status.state === "playing" && !timeoutResult;
 
   return (
     <div className="App crt">
@@ -245,16 +501,16 @@ function App() {
         <div className="layout">
           <div className="card">
             <h2 className="cardTitle">Controls</h2>
+
             <Controls
               mode={mode}
               playAs={playAs}
               aiDepth={aiDepth}
               canUndo={cursor > 0}
               canRedo={cursor < positions.length - 1}
-              canMove={cursor === positions.length - 1 && status.state === "playing"}
+              canMove={canMoveNow}
               onModeChange={(v) => {
                 setMode(v);
-                // keep board, but selection should reset to avoid surprises
                 setSelected(null);
               }}
               onPlayAsChange={(v) => {
@@ -265,18 +521,51 @@ function App() {
               onNewGame={newGame}
               onUndo={undo}
               onRedo={redo}
+              timePresetId={timePresetId}
+              customMinutes={customMinutes}
+              customIncrement={customIncrement}
+              timeControlsLocked={timeControlsLocked}
+              clockStarted={clockArmed}
+              isPaused={clockManualPaused}
+              onTimePresetChange={(id) => setTimePresetId(id)}
+              onCustomMinutesChange={(v) => setCustomMinutes(Number(v))}
+              onCustomIncrementChange={(v) => setCustomIncrement(Number(v))}
+              onStartClock={() => {
+                if (!canMoveNow) return;
+                setClockArmed(true);
+                setClockManualPaused(false);
+                // Do NOT start ticking yet; ticking starts on first move.
+                setClock((c) => ({ ...c, isRunning: false, isPaused: false, activeColor: null, lastTickAt: null }));
+              }}
+              onTogglePause={() => {
+                if (!clockArmed) return;
+                setClockManualPaused((p) => !p);
+              }}
             />
 
             <div className="statusBar" role="status" aria-live="polite">
               <div className="statusText">{statusLine}</div>
               <div className="statusHint">
-                {cursor !== positions.length - 1
-                  ? "Viewing history — return to latest to continue."
-                  : mode === "ai"
-                    ? `You are ${playAs === "w" ? "White" : "Black"}`
-                    : "Pass & play"}
+                {timeoutResult
+                  ? timeoutResult.reason
+                  : cursor !== positions.length - 1
+                    ? "Viewing history — return to latest to continue."
+                    : mode === "ai"
+                      ? `You are ${playAs === "w" ? "White" : "Black"}`
+                      : "Pass & play"}
               </div>
             </div>
+
+            <div style={{ height: 12 }} />
+
+            <Clocks
+              whiteMs={clock.remainingWMs}
+              blackMs={clock.remainingBMs}
+              activeColor={clock.isRunning && !clock.isPaused ? clock.activeColor : null}
+              isRunning={clockRunning}
+              isPaused={isClockPaused}
+              labels={clocksLabels}
+            />
 
             <div style={{ height: 12 }} />
 

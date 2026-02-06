@@ -559,3 +559,18 @@ export function evaluate(position) {
   const mobility = getLegalMoves(position).length;
   return mat + (position.toMove === "w" ? 1 : -1) * mobility * 2;
 }
+
+// PUBLIC_INTERFACE
+export function hasOnlyKing(position, color) {
+  /**
+   * Returns true if `color` has only its king remaining.
+   * Used for a simplified flag-draw check: if opponent has only king, flag is a draw.
+   */
+  for (const sq of Object.keys(position.board)) {
+    const p = position.board[sq];
+    if (!p) continue;
+    if (p.color !== color) continue;
+    if (p.type !== "k") return false;
+  }
+  return true;
+}
