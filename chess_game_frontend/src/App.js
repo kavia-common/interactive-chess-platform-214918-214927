@@ -25,6 +25,15 @@ import { buildPositionsFromMoves } from "./chess/pgn";
 import Clocks from "./components/Clocks";
 import EvalBar from "./components/EvalBar";
 import AnalysisControls from "./components/AnalysisControls";
+import ThemeSwitcher from "./components/ThemeSwitcher";
+import PieceSetPicker from "./components/PieceSetPicker";
+import {
+  applyThemeToDocument,
+  loadThemePrefs,
+  saveThemePrefs,
+  getThemes,
+} from "./theme/themes";
+import { loadPieceSetPref, savePieceSetPref } from "./board/PieceRenderer";
 import MoveTree from "./components/MoveTree";
 import PVList from "./components/PVList";
 import {
@@ -64,6 +73,20 @@ function App() {
   const [mode, setMode] = useState("ai"); // "local" | "ai"
   const [playAs, setPlayAs] = useState("w"); // used when mode === "ai"
 
+  // Theme + pieces preferences (persisted)
+  const [{ themeId, boardSchemeId }, setThemePrefs] = useState(() => loadThemePrefs());
+  const [{ pieceSetId }, setPiecePrefs] = useState(() => loadPieceSetPref());
+
+  // Apply theme on load and whenever selection changes.
+  useEffect(() => {
+    applyThemeToDocument(themeId, boardSchemeId);
+    saveThemePrefs({ themeId, boardSchemeId });
+  }, [themeId, boardSchemeId]);
+
+  useEffect(() => {
+    savePieceSetPref(pieceSetId);
+  }, [pieceSetId]);
+
   // Analysis mode (separate exploration timeline)
   const [analysisEnabled, setAnalysisEnabled] = useState(false);
   const [analysisSession, setAnalysisSession] = useState(() =>
@@ -97,6 +120,17 @@ function App() {
   const boardPosition = analysisEnabled ? analysisPosition : position;
 
   const status = useMemo(() => getGameStatus(boardPosition), [boardPosition]);
+
+  // If user switches themes, keep board scheme consistent (or fall back to theme default).
+  useEffect(() => {
+    const themes = getThemes();
+    const t = themes.find((x) => x.id === themeId) || themes[0];
+    const ok = t.boardSchemes.some((s) => s.id === boardSchemeId);
+    if (!ok) {
+      setThemePrefs({ themeId: t.id, boardSchemeId: t.defaultBoardSchemeId });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [themeId]);
 
   const lastMove = boardPosition.lastMove;
   const legalTargetsForSelected = useMemo(() => {
@@ -922,6 +956,20 @@ function App() {
               }}
             />
 
+            <ThemeSwitcher
+              themeId={themeId}
+              boardSchemeId={boardSchemeId}
+              onChangeThemeId={(id) => setThemePrefs((p) => ({ ...p, themeId: id }))}
+              onChangeBoardSchemeId={(id) =>
+                setThemePrefs((p) => ({ ...p, boardSchemeId: id }))
+              }
+            />
+
+            <PieceSetPicker
+              pieceSetId={pieceSetId}
+              onChangePieceSetId={(id) => setPiecePrefs({ pieceSetId: id })}
+            />
+
             <div className="buttonRow" style={{ marginTop: 10 }}>
               <button
                 className="button buttonGhost"
@@ -990,6 +1038,7 @@ function App() {
                 <Board
                   position={boardPosition}
                   orientation={mode === "ai" ? playAs : "w"}
+                  pieceSetId={pieceSetId}
                   selected={selected}
                   legalTargets={legalTargetsForSelected}
                   lastMove={lastMove}

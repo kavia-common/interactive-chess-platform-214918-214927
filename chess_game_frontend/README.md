@@ -66,6 +66,44 @@ Notes:
 - Comments, NAGs, and variations are currently ignored on import.
 - If **Analysis mode** is active, you’ll be prompted before applying the imported PGN to the *main* game (analysis stays separate).
 
+## Themes, board schemes, and piece sets
+
+This app supports runtime switching of:
+
+- **Theme** (retro palettes) + **board color scheme**
+- **Piece set** (default Unicode, Pixel/8-bit SVG, Alpha minimalist SVG)
+
+Selections are persisted in `localStorage` and restored on load.
+
+### Adding a new theme
+
+Edit:
+
+- `src/theme/themes.js`
+
+Add a new entry to `THEMES`:
+
+- `id`, `name`, `description`
+- `cssVars` (CSS variables applied to `:root`)
+- `boardSchemes` (at least one `{id,name,light,dark}`)
+
+### Adding a new piece set
+
+Piece rendering is abstracted behind:
+
+- `src/board/PieceRenderer.js`
+
+To add a new set:
+
+1. Add the set to `PIECE_SETS` in `PieceRenderer.js`
+2. Create a renderer module in `src/board/pieceSets/<yourSet>.js` exporting:
+   - `renderPiece({ piece, className, isDragging, ariaLabel }) => ReactNode`
+3. Add a lazy-load mapping inside `loadRenderer(pieceSetId)`.
+
+Notes:
+- Prefer **inline SVG** for high-DPI rendering.
+- Keep `aria-label` meaningful (the renderer receives `ariaLabel`).
+
 ## Learn More
 
 To learn React, check out the [React documentation](https://reactjs.org/).

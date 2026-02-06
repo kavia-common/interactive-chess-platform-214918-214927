@@ -2,10 +2,20 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background: #f9fafb;
-  color: #111827;
-  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Inter",
-    "Helvetica Neue", sans-serif;
+  background: var(--bg, #f9fafb);
+  color: var(--text, #111827);
+  font-family: var(
+    --font-ui,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    Segoe UI,
+    Roboto,
+    Arial,
+    "Inter",
+    "Helvetica Neue",
+    sans-serif
+  );
 }
 
 button,

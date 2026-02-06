@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { FILES, RANKS, squareFromFR } from "../chess/utils";
+import { PieceRenderer } from "../board/PieceRenderer";
 
 /**
  * PUBLIC_INTERFACE
@@ -8,6 +9,7 @@ import { FILES, RANKS, squareFromFR } from "../chess/utils";
 export default function Board({
   position,
   orientation = "w",
+  pieceSetId = "default",
   selected,
   legalTargets,
   lastMove,
@@ -102,7 +104,12 @@ export default function Board({
                   onDragEnd={onDragEnd}
                   aria-label={`${piece.color === "w" ? "White" : "Black"} ${piece.type}`}
                 >
-                  {piece.unicode}
+                  <PieceRenderer
+                    piece={piece}
+                    pieceSetId={pieceSetId}
+                    className=""
+                    isDragging={dragFrom === sq}
+                  />
                 </span>
               ) : null}
             </div>
