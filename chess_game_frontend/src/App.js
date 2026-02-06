@@ -21,6 +21,22 @@ import MoveHistory from "./components/MoveHistory";
 import CapturedPanel from "./components/CapturedPanel";
 import Controls, { TIME_PRESETS } from "./components/Controls";
 import Clocks from "./components/Clocks";
+import EvalBar from "./components/EvalBar";
+import AnalysisControls from "./components/AnalysisControls";
+import MoveTree from "./components/MoveTree";
+import PVList from "./components/PVList";
+import {
+  addChildMove,
+  createAnalysisSession,
+  exportAnalysisJson,
+  exportAnalysisPgn,
+  importAnalysisJson,
+  pathToNode,
+  selectNode,
+  setNodeComment,
+  setNodeEval,
+} from "./analysis/tree";
+import { createAnalysisClient } from "./workers/analysisClient";
 import {
   createClockState,
   getFlaggedColor,
@@ -46,6 +62,23 @@ function App() {
   const [mode, setMode] = useState("ai"); // "local" | "ai"
   const [playAs, setPlayAs] = useState("w"); // used when mode === "ai"
 
+  // Analysis mode (separate exploration timeline)
+  const [analysisEnabled, setAnalysisEnabled] = useState(false);
+  const [analysisSession, setAnalysisSession] = useState(() =>
+    createAnalysisSession(createInitialPosition())
+  );
+  const analysisSelectedNode = analysisSession.nodes[analysisSession.selectedId];
+  const analysisPosition = analysisSelectedNode?.position || createInitialPosition();
+
+  // Analysis engine settings
+  const [analysisLimitsMode, setAnalysisLimitsMode] = useState("time"); // "time" | "depth"
+  const [analysisTimeMs, setAnalysisTimeMs] = useState(1000);
+  const [analysisMaxDepth, setAnalysisMaxDepth] = useState(6);
+  const [analysisMultiPv, setAnalysisMultiPv] = useState(2);
+
+  const [analysisThinking, setAnalysisThinking] = useState(false);
+  const [analysisPvLines, setAnalysisPvLines] = useState([]);
+
   // AI controls (difficulty presets + custom)
   const [aiDifficulty, setAiDifficulty] = useState("medium"); // easy|medium|hard|custom
   const [aiCustomMaxDepth, setAiCustomMaxDepth] = useState(6);
@@ -59,14 +92,15 @@ function App() {
   const [selected, setSelected] = useState(null);
 
   const position = positions[cursor];
+  const boardPosition = analysisEnabled ? analysisPosition : position;
 
-  const status = useMemo(() => getGameStatus(position), [position]);
+  const status = useMemo(() => getGameStatus(boardPosition), [boardPosition]);
 
-  const lastMove = position.lastMove;
+  const lastMove = boardPosition.lastMove;
   const legalTargetsForSelected = useMemo(() => {
     if (!selected) return [];
-    return getLegalMovesForSquare(position, selected).map((m) => m.to);
-  }, [position, selected]);
+    return getLegalMovesForSquare(boardPosition, selected).map((m) => m.to);
+  }, [boardPosition, selected]);
 
   const captured = useMemo(() => {
     // Compute from current position move list (up to cursor)
@@ -105,19 +139,22 @@ function App() {
   }, [cursor, clockArmed]);
 
   const gameEnded = useMemo(
-    () => status.state !== "playing" && status.state !== "check",
-    [status.state]
+    () => (analysisEnabled ? false : status.state !== "playing" && status.state !== "check"),
+    [status.state, analysisEnabled]
   );
 
   const isClockPaused = clockManualPaused || clockVisibilityPaused;
 
   const clockRunning = useMemo(() => {
+    // Analysis mode disables clocks.
+    if (analysisEnabled) return false;
+
     // We allow running only if armed and game not ended and at tip (no time-travel).
     if (!clockArmed) return false;
     if (cursor !== positions.length - 1) return false;
     if (gameEnded) return false;
     return true;
-  }, [clockArmed, cursor, positions.length, gameEnded]);
+  }, [analysisEnabled, clockArmed, cursor, positions.length, gameEnded]);
 
   const [timeoutResult, setTimeoutResult] = useState(null);
   // { state: "timeout"|"timeout-draw", loser?: "w"|"b", winner?: "w"|"b", reason: string }
@@ -240,9 +277,13 @@ function App() {
   // AI Worker integration
   // -----------------------
   const aiWorkerRef = useRef(null);
+  const analysisClientRef = useRef(null);
+
   const [aiThinking, setAiThinking] = useState(false);
   const [aiInfo, setAiInfo] = useState(null); // {depth,nodes,timeMs,eval}
   const activeSearchRef = useRef(0);
+
+  const analysisDebounceRef = useRef(null);
 
   const isHumanTurn = useMemo(() => {
     if (mode === "local") return true;
@@ -274,6 +315,9 @@ function App() {
     // Create worker once
     const w = createAiWorker();
     aiWorkerRef.current = w;
+
+    // Wrap same worker for analysis. We use addEventListener inside the wrapper, so it can coexist.
+    analysisClientRef.current = createAnalysisClient(w);
 
     w.onmessage = (e) => {
       const msg = e.data;
@@ -339,6 +383,13 @@ function App() {
     };
 
     return () => {
+      try {
+        analysisClientRef.current?.dispose?.();
+      } catch {
+        // ignore
+      }
+      analysisClientRef.current = null;
+
       try {
         w.terminate();
       } catch {
@@ -436,6 +487,7 @@ function App() {
   // AI turn loop: send SEARCH to worker whenever it's AI's move and we are at tip.
   useEffect(() => {
     const shouldAiMove =
+      !analysisEnabled &&
       mode === "ai" &&
       cursor === positions.length - 1 &&
       position.toMove !== playAs &&
@@ -527,28 +579,35 @@ function App() {
     setSelected(null);
   };
 
-  const canMoveNow = cursor === positions.length - 1 && status.state === "playing" && !timeoutResult;
+  const canMoveNow =
+    !analysisEnabled &&
+    cursor === positions.length - 1 &&
+    status.state === "playing" &&
+    !timeoutResult;
 
   // Disable interactions while AI is thinking (for AI side), keep local mode unaffected.
   const inputLocked = useMemo(() => {
+    if (analysisEnabled) return false;
     if (!canMoveNow) return true;
     if (mode !== "ai") return false;
     if (!aiThinking) return false;
     // While AI thinks, lock user input entirely to avoid divergence.
     return true;
-  }, [canMoveNow, mode, aiThinking]);
+  }, [analysisEnabled, canMoveNow, mode, aiThinking]);
 
   const onSquareClick = (sq) => {
     if (inputLocked) return;
-    if (timeoutResult) return;
-    if (status.state !== "playing") return;
-    if (!isHumanTurn) return;
-    if (cursor !== positions.length - 1) return; // disallow move while time-traveling
+    if (!analysisEnabled) {
+      if (timeoutResult) return;
+      if (status.state !== "playing") return;
+      if (!isHumanTurn) return;
+      if (cursor !== positions.length - 1) return; // disallow move while time-traveling
+    }
 
     if (!selected) {
-      const p = position.board[sq];
+      const p = boardPosition.board[sq];
       if (!p) return;
-      if (p.color !== position.toMove) return;
+      if (p.color !== boardPosition.toMove) return;
       setSelected(sq);
       return;
     }
@@ -559,16 +618,20 @@ function App() {
       return;
     }
 
-    // Attempt make move selected -> sq; if illegal, maybe reselect piece.
-    const moved = makeMoveFromTo(position, selected, sq);
+    const moved = makeMoveFromTo(boardPosition, selected, sq);
     if (moved) {
-      pushMove(moved);
+      if (analysisEnabled) {
+        setAnalysisSession((s) => addChildMove(s, s.selectedId, moved));
+      } else {
+        pushMove(moved);
+      }
+      setSelected(null);
       return;
     }
 
     // If clicked another own piece, switch selection
-    const p2 = position.board[sq];
-    if (p2 && p2.color === position.toMove) {
+    const p2 = boardPosition.board[sq];
+    if (p2 && p2.color === boardPosition.toMove) {
       setSelected(sq);
       return;
     }
@@ -578,14 +641,22 @@ function App() {
 
   const onPieceDrop = (from, to) => {
     if (inputLocked) return;
-    if (timeoutResult) return;
-    if (status.state !== "playing") return;
-    if (!isHumanTurn) return;
-    if (cursor !== positions.length - 1) return;
+    if (!analysisEnabled) {
+      if (timeoutResult) return;
+      if (status.state !== "playing") return;
+      if (!isHumanTurn) return;
+      if (cursor !== positions.length - 1) return;
+    }
 
-    const move = makeMoveFromTo(position, from, to);
+    const move = makeMoveFromTo(boardPosition, from, to);
     if (!move) return;
-    pushMove(move);
+
+    if (analysisEnabled) {
+      setAnalysisSession((s) => addChildMove(s, s.selectedId, move));
+    } else {
+      pushMove(move);
+    }
+    setSelected(null);
   };
 
   const moveStrings = useMemo(() => {
@@ -631,6 +702,107 @@ function App() {
     return { w: "White", b: "Black" };
   }, [mode, playAs]);
 
+  const analysisLimits = useMemo(() => {
+    const timeMs = analysisLimitsMode === "time" ? analysisTimeMs : 1000;
+    const maxDepth = analysisLimitsMode === "depth" ? analysisMaxDepth : 6;
+    const hardTimeMs = Math.round(timeMs * 1.4);
+
+    return { maxDepth, timeMs, hardTimeMs };
+  }, [analysisLimitsMode, analysisTimeMs, analysisMaxDepth]);
+
+  const cancelAnalysis = () => {
+    analysisClientRef.current?.cancel?.();
+    setAnalysisThinking(false);
+  };
+
+  const runAnalysisNow = async () => {
+    if (!analysisEnabled) return;
+    if (!analysisClientRef.current) return;
+
+    const nodeId = analysisSession.selectedId;
+    setAnalysisThinking(true);
+
+    try {
+      const res = await analysisClientRef.current.analyze(analysisPosition, {
+        limits: analysisLimits,
+        multiPv: analysisMultiPv,
+        onInfo: (info) => {
+          // keep UI responsive; we don't need to store all info, only last depth
+          if (typeof info?.depth === "number") {
+            setAnalysisSession((s) => setNodeEval(s, nodeId, { rawEval: s.nodes[nodeId]?.evalInfo?.rawEval ?? null, depth: info.depth }));
+          }
+        },
+      });
+
+      if (res?.type !== "ANALYSIS_RESULT") return;
+
+      setAnalysisSession((s) => setNodeEval(s, nodeId, { rawEval: res.eval ?? 0, depth: res.depthReached ?? null, multiPv: res.lines ?? [] }));
+      setAnalysisPvLines(res.lines || []);
+    } catch {
+      // cancelled or error; ignore
+    } finally {
+      setAnalysisThinking(false);
+    }
+  };
+
+  // Debounce auto-analysis on navigation/settings changes.
+  useEffect(() => {
+    if (!analysisEnabled) return;
+
+    if (analysisDebounceRef.current) window.clearTimeout(analysisDebounceRef.current);
+    analysisDebounceRef.current = window.setTimeout(() => {
+      runAnalysisNow();
+    }, 220);
+
+    return () => {
+      if (analysisDebounceRef.current) window.clearTimeout(analysisDebounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysisEnabled, analysisSession.selectedId, analysisLimits, analysisMultiPv]);
+
+  // When toggling analysis on, sync analysis root to current game position at cursor (but do not mutate game).
+  useEffect(() => {
+    if (!analysisEnabled) return;
+    setAnalysisSession(createAnalysisSession(position));
+    setAnalysisPvLines([]);
+    setSelected(null);
+    cancelAiSearch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysisEnabled]);
+
+  // When leaving analysis mode, stop any analysis.
+  useEffect(() => {
+    if (analysisEnabled) return;
+    cancelAnalysis();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysisEnabled]);
+
+  const applyAnalysisToGame = () => {
+    // Replace live game's history/state with the selected line from analysis root -> selected node.
+    const ids = pathToNode(analysisSession, analysisSession.selectedId);
+    if (!ids.length) return;
+
+    const newPositions = [analysisSession.nodes[analysisSession.rootId]?.position || createInitialPosition()];
+    for (let i = 1; i < ids.length; i += 1) {
+      const node = analysisSession.nodes[ids[i]];
+      if (!node?.move) continue;
+      const prev = newPositions[newPositions.length - 1];
+      newPositions.push(applyMove(prev, node.move));
+    }
+
+    cancelAiSearch();
+    setPositions(newPositions);
+    setCursor(newPositions.length - 1);
+    setSelected(null);
+
+    // Exit analysis after applying.
+    setAnalysisEnabled(false);
+  };
+
+  const boardEvalRaw = analysisEnabled
+    ? analysisSelectedNode?.evalInfo?.rawEval ?? null
+    : aiInfo?.eval ?? null;
+
   return (
     <div className="App crt">
       <div className="container">
@@ -655,6 +827,44 @@ function App() {
         <div className="layout">
           <div className="card">
             <h2 className="cardTitle">Controls</h2>
+
+            <AnalysisControls
+              enabled={analysisEnabled}
+              onToggleEnabled={(v) => setAnalysisEnabled(Boolean(v))}
+              limitsMode={analysisLimitsMode}
+              onLimitsModeChange={(v) => setAnalysisLimitsMode(v)}
+              timeMs={analysisTimeMs}
+              onTimeMsChange={(v) => setAnalysisTimeMs(v)}
+              maxDepth={analysisMaxDepth}
+              onMaxDepthChange={(v) => setAnalysisMaxDepth(v)}
+              multiPv={analysisMultiPv}
+              onMultiPvChange={(v) => setAnalysisMultiPv(v)}
+              isThinking={analysisThinking}
+              onStart={() => runAnalysisNow()}
+              onStop={() => cancelAnalysis()}
+              onClear={() => {
+                setAnalysisSession(createAnalysisSession(position));
+                setAnalysisPvLines([]);
+              }}
+              onExportJson={() => {
+                const txt = exportAnalysisJson(analysisSession);
+                navigator.clipboard?.writeText?.(txt);
+              }}
+              onImportJson={() => {
+                const txt = window.prompt("Paste analysis JSON:");
+                if (!txt) return;
+                const s = importAnalysisJson(txt);
+                if (s) setAnalysisSession(s);
+              }}
+              onExportPgn={() => {
+                const txt = exportAnalysisPgn(analysisSession);
+                navigator.clipboard?.writeText?.(txt);
+              }}
+              onApplyToGame={() => applyAnalysisToGame()}
+              canApply={analysisEnabled && analysisSession.selectedId !== analysisSession.rootId}
+            />
+
+            <div style={{ height: 12 }} />
 
             <Controls
               mode={mode}
@@ -682,7 +892,7 @@ function App() {
               timePresetId={timePresetId}
               customMinutes={customMinutes}
               customIncrement={customIncrement}
-              timeControlsLocked={timeControlsLocked}
+              timeControlsLocked={timeControlsLocked || analysisEnabled}
               clockStarted={clockArmed}
               isPaused={clockManualPaused}
               onTimePresetChange={(id) => setTimePresetId(id)}
@@ -710,19 +920,26 @@ function App() {
             <div className="statusBar" role="status" aria-live="polite">
               <div className="statusText">{statusLine}</div>
               <div className="statusHint">
-                {timeoutResult
-                  ? timeoutResult.reason
-                  : cursor !== positions.length - 1
-                    ? "Viewing history — return to latest to continue."
-                    : mode === "ai"
-                      ? `You are ${playAs === "w" ? "White" : "Black"}`
-                      : "Pass & play"}
+                {analysisEnabled
+                  ? "Analysis mode — explore freely; Apply to commit."
+                  : timeoutResult
+                    ? timeoutResult.reason
+                    : cursor !== positions.length - 1
+                      ? "Viewing history — return to latest to continue."
+                      : mode === "ai"
+                        ? `You are ${playAs === "w" ? "White" : "Black"}`
+                        : "Pass & play"}
               </div>
             </div>
 
             <div style={{ height: 10 }} />
 
-            {mode === "ai" && aiThinking ? (
+            {analysisEnabled && analysisThinking ? (
+              <div className="aiThinkingRow" aria-label="Engine analysis indicator">
+                <span className="crtThinkingDot" aria-hidden="true" />
+                <span className="aiThinkingText">Analyzing…</span>
+              </div>
+            ) : mode === "ai" && aiThinking ? (
               <div className="aiThinkingRow" aria-label="AI thinking indicator">
                 <span className="crtThinkingDot" aria-hidden="true" />
                 <span className="aiThinkingText">
@@ -750,9 +967,10 @@ function App() {
             <div style={{ height: 12 }} />
 
             <div className="boardWrap">
+              <EvalBar rawEval={boardEvalRaw} />
               <div className={aiThinking ? "boardThinkingWrap" : ""}>
                 <Board
-                  position={position}
+                  position={boardPosition}
                   orientation={mode === "ai" ? playAs : "w"}
                   selected={selected}
                   legalTargets={legalTargetsForSelected}
@@ -760,51 +978,98 @@ function App() {
                   inCheckSquare={status.inCheckSquare}
                   onSquareClick={onSquareClick}
                   onPieceDrop={onPieceDrop}
-                  isMoveLegal={(from, to) => isMoveLegal(position, from, to)}
+                  isMoveLegal={(from, to) => isMoveLegal(boardPosition, from, to)}
                 />
               </div>
             </div>
           </div>
 
           <div className="panelGrid">
-            <div className="card">
-              <h2 className="cardTitle">Captured</h2>
-              <div className="miniRow">
-                <CapturedPanel
-                  title="White captured"
-                  pieces={captured.b}
-                  pieceToUnicode={PIECE_TO_UNICODE}
-                />
-                <CapturedPanel
-                  title="Black captured"
-                  pieces={captured.w}
-                  pieceToUnicode={PIECE_TO_UNICODE}
-                />
-              </div>
-            </div>
-
-            <div className="card">
-              <h2 className="cardTitle">Move History</h2>
-              <MoveHistory moves={moveStrings} cursor={cursor} onJump={onHistoryJump} />
-              <div style={{ height: 10 }} />
-              <div className="statusHint">
-                Tip: click a move to time-travel. Resume by clicking the last move.
-              </div>
-              <div style={{ height: 8 }} />
-              <div className="statusHint">
-                Current:{" "}
-                <span style={{ fontFamily: "var(--font-mono)" }}>
-                  {toSquare(position, "e1") ? "" : ""}
-                </span>
-              </div>
-              {mode === "ai" ? (
-                <div className="statusHint" style={{ marginTop: 8 }}>
-                  AI: {aiDifficulty}
-                  {aiDifficulty === "custom" ? ` (≤d${aiCustomMaxDepth}, ${aiCustomThinkMs}ms)` : ""} —{" "}
-                  budget {aiLimits.timeMs}ms (hard {aiLimits.hardTimeMs}ms)
+            {analysisEnabled ? (
+              <>
+                <div className="card">
+                  <h2 className="cardTitle">Move Tree</h2>
+                  <MoveTree
+                    session={analysisSession}
+                    activeNodeId={analysisSession.selectedId}
+                    onSelectNode={(id) => {
+                      setAnalysisSession((s) => selectNode(s, id));
+                      setSelected(null);
+                    }}
+                    onSetComment={(id, txt) => setAnalysisSession((s) => setNodeComment(s, id, txt))}
+                    isThinking={analysisThinking}
+                  />
+                  <div style={{ height: 10 }} />
+                  <div className="statusHint">
+                    Click a node to navigate. Make a different move to add a new branch.
+                  </div>
                 </div>
-              ) : null}
-            </div>
+
+                <div className="card">
+                  <h2 className="cardTitle">Variations (Multi-PV)</h2>
+                  <PVList
+                    pvLines={analysisPvLines}
+                    onClickLine={(line) => {
+                      // Build the PV into the tree starting at currently selected node.
+                      const pv = line?.pv || [];
+                      if (!pv.length) return;
+
+                      setAnalysisSession((s0) => {
+                        let s = s0;
+                        let parent = s.selectedId;
+                        for (const mv of pv) {
+                          s = addChildMove(s, parent, mv);
+                          parent = s.selectedId;
+                        }
+                        return s;
+                      });
+                      setSelected(null);
+                    }}
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="card">
+                  <h2 className="cardTitle">Captured</h2>
+                  <div className="miniRow">
+                    <CapturedPanel
+                      title="White captured"
+                      pieces={captured.b}
+                      pieceToUnicode={PIECE_TO_UNICODE}
+                    />
+                    <CapturedPanel
+                      title="Black captured"
+                      pieces={captured.w}
+                      pieceToUnicode={PIECE_TO_UNICODE}
+                    />
+                  </div>
+                </div>
+
+                <div className="card">
+                  <h2 className="cardTitle">Move History</h2>
+                  <MoveHistory moves={moveStrings} cursor={cursor} onJump={onHistoryJump} />
+                  <div style={{ height: 10 }} />
+                  <div className="statusHint">
+                    Tip: click a move to time-travel. Resume by clicking the last move.
+                  </div>
+                  <div style={{ height: 8 }} />
+                  <div className="statusHint">
+                    Current:{" "}
+                    <span style={{ fontFamily: "var(--font-mono)" }}>
+                      {toSquare(position, "e1") ? "" : ""}
+                    </span>
+                  </div>
+                  {mode === "ai" ? (
+                    <div className="statusHint" style={{ marginTop: 8 }}>
+                      AI: {aiDifficulty}
+                      {aiDifficulty === "custom" ? ` (≤d${aiCustomMaxDepth}, ${aiCustomThinkMs}ms)` : ""} —{" "}
+                      budget {aiLimits.timeMs}ms (hard {aiLimits.hardTimeMs}ms)
+                    </div>
+                  ) : null}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
