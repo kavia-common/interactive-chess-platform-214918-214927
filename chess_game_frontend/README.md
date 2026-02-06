@@ -1,0 +1,133 @@
+# Lightweight React Template for KAVIA
+
+This project provides a minimal React template with a clean, modern UI and minimal dependencies.
+
+## Features
+
+- **Lightweight**: No heavy UI frameworks - uses only vanilla CSS and React
+- **Fast**: Minimal dependencies for quick loading times
+- **Simple**: Easy to understand and modify
+- **Responsive AI**: Chess AI search runs in a Web Worker so the UI stays smooth while the AI thinks
+- **Adjustable difficulty**: Easy/Medium/Hard plus Custom (depth + think time)
+
+## Getting Started
+
+In the project directory, you can run:
+
+### `npm start`
+
+Runs the app in development mode.\
+Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+
+### `npm test`
+
+Launches the test runner in interactive watch mode.
+
+### `npm run build`
+
+Builds the app for production to the `build` folder.\
+It correctly bundles React in production mode and optimizes the build for the best performance.
+
+## Customization
+
+### Colors
+
+The main brand colors are defined as CSS variables in `src/App.css`:
+
+```css
+:root {
+  --kavia-orange: #E87A41;
+  --kavia-dark: #1A1A1A;
+  --text-color: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.7);
+  --border-color: rgba(255, 255, 255, 0.1);
+}
+```
+
+### Components
+
+This template uses pure HTML/CSS components instead of a UI framework. You can find component styles in `src/App.css`. 
+
+Common components include:
+- Buttons (`.btn`, `.btn-large`)
+- Container (`.container`)
+- Navigation (`.navbar`)
+- Typography (`.title`, `.subtitle`, `.description`)
+
+## PGN import/export
+
+This app supports saving/loading games via **PGN**:
+
+- Click **PGN…** in the Controls panel.
+- **Export**: copy to clipboard or download `game.pgn`.
+- **Import**: paste PGN text or choose a `.pgn` file.
+
+Notes:
+- Comments, NAGs, and variations are currently ignored on import.
+- If **Analysis mode** is active, you’ll be prompted before applying the imported PGN to the *main* game (analysis stays separate).
+
+## Themes, board schemes, and piece sets
+
+This app supports runtime switching of:
+
+- **Theme** (retro palettes) + **board color scheme**
+- **Piece set** (default Unicode, Pixel/8-bit SVG, Alpha minimalist SVG)
+
+Selections are persisted in `localStorage` and restored on load.
+
+### Adding a new theme
+
+Edit:
+
+- `src/theme/themes.js`
+
+Add a new entry to `THEMES`:
+
+- `id`, `name`, `description`
+- `cssVars` (CSS variables applied to `:root`)
+- `boardSchemes` (at least one `{id,name,light,dark}`)
+
+### Adding a new piece set
+
+Piece rendering is abstracted behind:
+
+- `src/board/PieceRenderer.js`
+
+To add a new set:
+
+1. Add the set to `PIECE_SETS` in `PieceRenderer.js`
+2. Create a renderer module in `src/board/pieceSets/<yourSet>.js` exporting:
+   - `renderPiece({ piece, className, isDragging, ariaLabel }) => ReactNode`
+3. Add a lazy-load mapping inside `loadRenderer(pieceSetId)`.
+
+Notes:
+- Prefer **inline SVG** for high-DPI rendering.
+- Keep `aria-label` meaningful (the renderer receives `ariaLabel`).
+
+## Learn More
+
+To learn React, check out the [React documentation](https://reactjs.org/).
+
+### Code Splitting
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+
+### Analyzing the Bundle Size
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+
+### Making a Progressive Web App
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+
+### Advanced Configuration
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+
+### Deployment
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+
+### `npm run build` fails to minify
+
+This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)

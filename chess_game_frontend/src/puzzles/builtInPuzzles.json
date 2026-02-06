@@ -1,0 +1,82 @@
+[
+  {
+    "id": "p1",
+    "fen": "7k/6pp/8/8/7Q/8/6PP/6K1 w - - 0 1",
+    "moves": ["h4d8"],
+    "rating": 800,
+    "themes": ["mateIn1", "checkmate"],
+    "description": "Mate in 1."
+  },
+  {
+    "id": "p2",
+    "fen": "7k/6pp/8/8/6Q1/8/6PP/6K1 w - - 0 1",
+    "moves": ["g4c8"],
+    "rating": 900,
+    "themes": ["mateIn1", "diagonal"],
+    "description": "Find the immediate checkmate."
+  },
+  {
+    "id": "p3",
+    "fen": "7k/6pp/8/8/5Q2/8/6PP/6K1 w - - 0 1",
+    "moves": ["f4f8"],
+    "rating": 950,
+    "themes": ["mateIn1", "backRank"],
+    "description": "Back-rank mate."
+  },
+  {
+    "id": "p4",
+    "fen": "7k/6pp/8/8/8/5Q2/6PP/6K1 w - - 0 1",
+    "moves": ["f3a8"],
+    "rating": 1000,
+    "themes": ["mateIn1", "longRange"],
+    "description": "One move wins immediately."
+  },
+  {
+    "id": "p5",
+    "fen": "6k1/5ppp/8/8/8/8/5PPP/6KQ w - - 0 1",
+    "moves": ["h1h8"],
+    "rating": 850,
+    "themes": ["mateIn1", "file"],
+    "description": "Deliver checkmate on the back rank."
+  },
+  {
+    "id": "p6",
+    "fen": "6k1/5ppp/8/8/8/8/5PPP/5RK1 w - - 0 1",
+    "moves": ["f1d1"],
+    "rating": 1100,
+    "themes": ["mateIn1", "rook"],
+    "description": "Simple rook maneuver to finish."
+  },
+  {
+    "id": "p7",
+    "fen": "7k/6pp/8/8/8/8/6PP/5RK1 w - - 0 1",
+    "moves": ["f1f8"],
+    "rating": 1000,
+    "themes": ["mateIn1", "rook"],
+    "description": "Rook to the 8th."
+  },
+  {
+    "id": "p8",
+    "fen": "6k1/6pp/8/8/6Q1/8/6PP/6K1 w - - 0 1",
+    "moves": ["g4c8"],
+    "rating": 950,
+    "themes": ["mateIn1", "queen"],
+    "description": "A familiar diagonal mate."
+  },
+  {
+    "id": "p9",
+    "fen": "7k/6pp/8/8/3Q4/8/6PP/6K1 w - - 0 1",
+    "moves": ["d4d8"],
+    "rating": 900,
+    "themes": ["mateIn1", "queen"],
+    "description": "Centralize and finish."
+  },
+  {
+    "id": "p10",
+    "fen": "7k/6pp/8/8/8/3Q4/6PP/6K1 w - - 0 1",
+    "moves": ["d3d8"],
+    "rating": 950,
+    "themes": ["mateIn1", "queen"],
+    "description": "One precise move."
+  }
+]
